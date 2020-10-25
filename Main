@@ -15,6 +15,12 @@ def basicgenmap(_strt, _stop, _NSIDE):  # (start, stop, NSIDE)
     return   np.linspace(_strt,_stop,_NPIX)        #set an array to generate a map
 
 
+#%% #Downloads the higher resolution WMAP data 
+!healpy_get_wmap_maps.sh
+wmap_map_I = hp.read_map("wmap_band_iqumap_r9_7yr_W_v4.fits")
+hp.write_map("my_map.fits", wmap_map_I, overwrite=True)
+
+
 #%% #Calls Planck power spectrum
 pars = camb.CAMBparams()
 #This function sets up CosmoMC-like settings, with one massive neutrino and helium set using BBN consistency
@@ -26,22 +32,18 @@ results = camb.get_results(pars)
 powers =results.get_cmb_power_spectra(pars, CMB_unit='muK')
 totCL=powers['total']
 ls = np.arange(totCL.shape[0])
-
 pars.set_for_lmax(4000, lens_potential_accuracy=2)
 results = camb.get_results(pars)
 accCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
-
 pars.set_for_lmax(6000, lens_potential_accuracy=4)
 results = camb.get_results(pars)
 refCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
-
 plt.figure()
 plt.plot(ls,totCL[:len(ls),2], color='C0')
 plt.plot(ls,accCL, color='C3')
 plt.plot(ls,refCL, color='k')
 plt.xlabel(r'$\ell$')
 plt.ylabel(r'$\ell(\ell+1)C_\ell^{BB}/2\pi\,[\mu {\rm K}^2]$')
-
 plt.show()
 print(accCL)
 print(len(accCL))
@@ -82,126 +84,26 @@ def noisemap(_map,_var):
     for i in range(len(_map)):
         _noisevec.append(np.random.normal(0,_var))
         _newmap.append(_map[i] + _noisevec[-1])
-
     _newmap = np.array(_newmap)    
     _noisevec = np.array(_noisevec)
-
     return [_newmap, _noisevec]
 
 
 #%% #Generate alms given a cls
 def genalms(_cl):
     alms = []
-
     for l in range(len(ell)):
-        alms.append([])
-    
-    
+        alms.append([]) 
         for m in range(len(ell)): #set negative m's
             alms[-1].append([np.random.normal(0,0.5*_cl[l]),np.random.normal(0,0.5*_cl[m])])
-    
         alms[-1].append([np.random.normal(0,_cl[l]),0.0])        #set m=0
-    
         for m in range(len(ell)):                    #set positive m's = -m's
             alms[-1].append([alms[l][(len(ell)-m-1)][0]])
             alms[-1][-1].append(-1.0*alms[l][len(ell)-m-1][-1])   #set imag part of positive m's = c.c. of negative m's.
-    
     return alms   
 
 
-
-
-
-#%%
-#Downloads the higher resolution WMAP data into the current directory.
-!healpy_get_wmap_maps.sh
-wmap_map_I = hp.read_map("wmap_band_iqumap_r9_7yr_W_v4.fits")
-hp.write_map("my_map.fits", wmap_map_I, overwrite=True)
-
-#%%
-#RING scheme takes a array where each element is each 
-actmap = np.linspace(-10,10,NPIX)
-print('actmap =',actmap)
-hp.mollview(actmap, title="Mollview image RING")
-hp.graticule()
-
-
-#%%
-#anafast creates a map from cl's and synfast creates cls from a map.
-actcl = hp.anafast(actmap, lmax=((3*NSIDE)-1))    #lmax = 3NSIDE -1 by default
-print('actcl = ', actcl)
-ell = np.arange(len(actcl))
-plt.figure()
-plt.plot(ell, ell * (ell + 1) * actcl)
-plt.xlabel("$\ell$")
-plt.ylabel("$\ell(\ell+1)actC_{\ell}$")
-plt.grid()
-
-#%%
-map = []
-noisemat = []
-for i in range(len(actmap)):
-    noisemat.append(np.random.normal(0,1))
-    map.append(actmap[i] + noisemat[-1])
-
-map = np.array(map)    
-noisemat = np.array(noisemat)
-print('map =',map)
-    
-    
-#%%
-cl = hp.anafast(map, lmax=((3*NSIDE)-1))
-print('cl = ', cl)
-ell = np.arange(len(cl))
-plt.figure()
-plt.plot(ell, ell * (ell + 1) * cl)
-plt.xlabel("$\ell$")
-plt.ylabel("$\ell(\ell+1)C_{\ell}$")
-plt.grid()
-
-
-#%%
-alms = []
-
-for l in range(len(ell)):
-    alms.append([])
-    
-    
-    for m in range(len(ell)): #set negative m's
-        alms[-1].append([np.random.normal(0,0.5*cl[l]),np.random.normal(0,0.5*cl[m])])
-        print('alms =',alms)
-    
-    alms[-1].append([np.random.normal(0,cl[l]),0.0])        #set m=0
-    
-    for m in range(len(ell)):                    #set positive m's
-        alms[-1].append()
-
-
-#%%
-#negative log of the posterior, psi, ignoring the prior term.
+#%% #negative log of the posterior, psi, ignoring the prior term.
 psi =0.5*(d-Ya)(n^-1)*()
-
-
-#%%
-#%%
-#Can find indices of all pixels within 10 deg of that point and then change the value of the map at those indices.
-ipix_disc = hp.query_disc(nside=NSIDE, vec=vec, radius=np.radians(10))
-m = np.arange(NPIX)
-m[ipix_disc] = m.max()
-hp.mollview(m, title="Mollview image RING")
-
-
-#%%
-#Downloads the higher resolution WMAP data into the current directory.
-!healpy_get_wmap_maps.sh
-wmap_map_I = hp.read_map("wmap_band_iqumap_r9_7yr_W_v4.fits")
-hp.write_map("my_map.fits", wmap_map_I, overwrite=True)
-
-
-#%%
-#
-hp.mollview(wmap_map_I,coord=["G", "E"],title="Histogram equalized Ecliptic",unit="mK",norm="hist",min=-1,max=1,)
-hp.graticule()
-print(len(wmap_map_I))
 
 
