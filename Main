@@ -89,18 +89,22 @@ def noisemap(_map,_var):
     return [_newmap, _noisevec]
 
 
-#%% #Generate alms given a cls
-def genalms(_cl):
-    alms = []
-    for l in range(len(ell)):
-        alms.append([]) 
-        for m in range(len(ell)): #set negative m's
-            alms[-1].append([np.random.normal(0,0.5*_cl[l]),np.random.normal(0,0.5*_cl[m])])
-        alms[-1].append([np.random.normal(0,_cl[l]),0.0])        #set m=0
-        for m in range(len(ell)):                    #set positive m's = -m's
-            alms[-1].append([alms[l][(len(ell)-m-1)][0]])
-            alms[-1][-1].append(-1.0*alms[l][len(ell)-m-1][-1])   #set imag part of positive m's = c.c. of negative m's.
-    return alms   
+#%% #Generate alms given cls
+def genalms1(_cls, _NSIDE): #does this manually
+    _alms = []
+    _lmax = (3*_NSIDE) - 1
+    for l in range(_lmax):
+        _alms.append([]) 
+        for m in range(_lmax): #set negative m's
+            _alms[-1].append([np.random.normal(0,0.5*_cls[l]),np.random.normal(0,0.5*_cls[m])])
+        _alms[-1].append([np.random.normal(0,_cls[l]),0.0])        #set m=0
+        for m in range(_lmax):                    #set positive m's = -m's
+            _alms[-1].append([_alms[l][(_lmax-m-1)][0]])
+            _alms[-1][-1].append(-1.0*_alms[l][_lmax-m-1][-1])   #set imag part of positive m's = c.c. of negative m's.
+    return _alms   
+
+def genalms2(_cls, _NSIDE): #does this automatically
+    return hp.synalm(_cls, lmax = ((3*_NSIDE)-1))
 
 
 #%% #negative log of the posterior, psi, ignoring the prior term.
