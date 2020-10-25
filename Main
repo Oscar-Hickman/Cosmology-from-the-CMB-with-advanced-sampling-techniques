@@ -111,3 +111,8 @@ def genalms2(_cls, _NSIDE): #does this automatically
 psi =0.5*(d-Ya)(n^-1)*()
 
 
+
+
+
+#%% #Files to run
+
