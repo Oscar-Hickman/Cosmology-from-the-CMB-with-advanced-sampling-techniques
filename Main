@@ -21,33 +21,35 @@ wmap_map_I = hp.read_map("wmap_band_iqumap_r9_7yr_W_v4.fits")
 hp.write_map("my_map.fits", wmap_map_I, overwrite=True)
 
 
-#%% #Calls Planck power spectrum
-pars = camb.CAMBparams()
-#This function sets up CosmoMC-like settings, with one massive neutrino and helium set using BBN consistency
-pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122, mnu=0.06, omk=0, tau=0.06)
-pars.InitPower.set_params(As=2e-9, ns=0.965, r=0)
-pars.set_for_lmax(2500, lens_potential_accuracy=0);
-#calculate results for these parameters
-results = camb.get_results(pars)
-powers =results.get_cmb_power_spectra(pars, CMB_unit='muK')
-totCL=powers['total']
-ls = np.arange(totCL.shape[0])
-pars.set_for_lmax(4000, lens_potential_accuracy=2)
-results = camb.get_results(pars)
-accCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
-pars.set_for_lmax(6000, lens_potential_accuracy=4)
-results = camb.get_results(pars)
-refCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
-plt.figure()
-plt.plot(ls,totCL[:len(ls),2], color='C0')
-plt.plot(ls,accCL, color='C3')
-plt.plot(ls,refCL, color='k')
-plt.xlabel(r'$\ell$')
-plt.ylabel(r'$\ell(\ell+1)C_\ell^{BB}/2\pi\,[\mu {\rm K}^2]$')
-plt.show()
-print(accCL)
-print(len(accCL))
+#%% #Use CAMB to generate a power spectrum
+def call_CAMB_map(_parameters, _lmax): #parameters = [H0, ombh2, omch2, mnu, omk, tau] = [Hubble Const, Baryon density, DM density, Sum 3 neutrino masses/eV, Curvature parameter (Omega kappa), Reionisation optical depth]
 
+    pars = camb.CAMBparams()
+    pars.set_cosmology(H0 = _parameters[0], ombh2 = _parameters[1], omch2 = _parameters[2], mnu = _parameters[3],
+                   omk = _parameters[4], tau = _parameters[5])
+    pars.InitPower.set_params(As=2e-9, ns=0.965, r=0)
+    pars.set_for_lmax(_lmax, lens_potential_accuracy=0);
+    #calculate results for these parameters
+    results = camb.get_results(pars)
+    powers =results.get_cmb_power_spectra(pars, CMB_unit='muK')
+    totCL=powers['total']
+    ls = np.arange(totCL.shape[0])
+
+    pars.set_for_lmax(_lmax, lens_potential_accuracy=2)
+    results = camb.get_results(pars)
+    _accCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
+
+    pars.set_for_lmax(6000, lens_potential_accuracy=4)
+    results = camb.get_results(pars)
+    _refCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
+
+    return [_accCL, _refCL]    #returns accCL and refCL ?
+
+
+#%% #PLots a map in the aithoff projection 
+def aithoffmap(_map):
+    hp.mollview(_map, title="Map displayed in the Aithoff projection", cmap = None)
+    hp.graticule()
 
 #%%  #Gives the resolution for an NSIDE and the number of pixels.
 def basicmapdet(_NSIDE, _NPIX):     
@@ -57,15 +59,16 @@ def basicmapdet(_NSIDE, _NPIX):
 
 #%% #Generate a map given a power spectrum
 def genmap(_cls, _NSIDE):   
-    return hp.synfast(_cls,_NSIDE ,lmax = (3*_NSIDE-1))
+    return hp.synfast(_cls,_NSIDE ,lmax = (3*_NSIDE-1), new = True)
 
 
-#%% #Generate a power spectrum given cls
+
+#Generate a power spectrum given cls
 def gencls(_map):
-    return hp.anafast(_map, lmax=int(((3*(len(_map)/12)**0.5)-1)))    #lmax = 3NSIDE -1 by default
+    return hp.anafast(_map, lmax=int(((3*(len(_map)/12)**0.5)-1)), new = True)    #lmax = 3NSIDE -1 by default
 
 
-#%% #Plots a given power spectrum 
+#Plots a given power spectrum 
 def plotpwrspctrm(_cls):
     _l = np.arange(len(_cls))
     plt.figure()
@@ -103,12 +106,17 @@ def genalms1(_cls, _NSIDE): #does this manually
             _alms[-1][-1].append(-1.0*_alms[l][_lmax-m-1][-1])   #set imag part of positive m's = c.c. of negative m's.
     return _alms   
 
+
 def genalms2(_cls, _NSIDE): #does this automatically
-    return hp.synalm(_cls, lmax = ((3*_NSIDE)-1))
+    return hp.synalm(_cls, lmax = ((3*_NSIDE)-1), new = True)
+
 
 
 #%% #negative log of the posterior, psi, ignoring the prior term.
 psi =0.5*(d-Ya)(n^-1)*()
+
+
+
 
 
 
