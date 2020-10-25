@@ -53,7 +53,60 @@ def basicmapdet(_NSIDE, _NPIX):
     print('Number of pixels =',_NPIX)
 
 
+#%% #Generate a map given a power spectrum
+def genmap(_cls, _NSIDE):   
+    return hp.synfast(_cls,_NSIDE ,lmax = (3*_NSIDE-1))
 
+
+#%% #Generate a power spectrum given cls
+def gencls(_map):
+    return hp.anafast(_map, lmax=int(((3*(len(_map)/12)**0.5)-1)))    #lmax = 3NSIDE -1 by default
+
+
+#%% #Plots a given power spectrum 
+def plotpwrspctrm(_cls):
+    _l = np.arange(len(_cls))
+    plt.figure()
+    plt.plot(_l, _l * (_l + 1) * _cls)
+    plt.xlabel("$\l$")
+    plt.ylabel("$\l(\l+1)C_{\l}$")
+    plt.grid()
+    plt.title("Power Spectrum")
+    plt.show()
+
+
+#%% #Adds random noise to each pixel on a map given a variance 
+def noisemap(_map,_var):
+    _newmap = []
+    _noisevec = []
+    for i in range(len(_map)):
+        _noisevec.append(np.random.normal(0,_var))
+        _newmap.append(_map[i] + _noisevec[-1])
+
+    _newmap = np.array(_newmap)    
+    _noisevec = np.array(_noisevec)
+
+    return [_newmap, _noisevec]
+
+
+#%% #Generate alms given a cls
+def genalms(_cl):
+    alms = []
+
+    for l in range(len(ell)):
+        alms.append([])
+    
+    
+        for m in range(len(ell)): #set negative m's
+            alms[-1].append([np.random.normal(0,0.5*_cl[l]),np.random.normal(0,0.5*_cl[m])])
+    
+        alms[-1].append([np.random.normal(0,_cl[l]),0.0])        #set m=0
+    
+        for m in range(len(ell)):                    #set positive m's = -m's
+            alms[-1].append([alms[l][(len(ell)-m-1)][0]])
+            alms[-1][-1].append(-1.0*alms[l][len(ell)-m-1][-1])   #set imag part of positive m's = c.c. of negative m's.
+    
+    return alms   
 
 
 
