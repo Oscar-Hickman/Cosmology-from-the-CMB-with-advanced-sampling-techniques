@@ -4,19 +4,66 @@ import tensorflow_probability as tfp
 import numpy as np
 import matplotlib.pyplot as plt
 import healpy as hp
+import camb 
+from camb import model, initialpower
 %matplotlib inline
 
-#%%
-#Gives the resolution at Nside
-NSIDE = 4
-print("Approximate resolution at NSIDE {} is {:.2} deg".format(NSIDE, hp.nside2resol(NSIDE, arcmin=True) / 60))
+
+#%%  #Generate a basic map
+def basicgenmap(_strt, _stop, _NSIDE):  # (start, stop, NSIDE)
+    _NPIX = 12*_NSIDE**2
+    return   np.linspace(_strt,_stop,_NPIX)        #set an array to generate a map
+
+
+#%% #Calls Planck power spectrum
+pars = camb.CAMBparams()
+#This function sets up CosmoMC-like settings, with one massive neutrino and helium set using BBN consistency
+pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122, mnu=0.06, omk=0, tau=0.06)
+pars.InitPower.set_params(As=2e-9, ns=0.965, r=0)
+pars.set_for_lmax(2500, lens_potential_accuracy=0);
+#calculate results for these parameters
+results = camb.get_results(pars)
+powers =results.get_cmb_power_spectra(pars, CMB_unit='muK')
+totCL=powers['total']
+ls = np.arange(totCL.shape[0])
+
+pars.set_for_lmax(4000, lens_potential_accuracy=2)
+results = camb.get_results(pars)
+accCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
+
+pars.set_for_lmax(6000, lens_potential_accuracy=4)
+results = camb.get_results(pars)
+refCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
+
+plt.figure()
+plt.plot(ls,totCL[:len(ls),2], color='C0')
+plt.plot(ls,accCL, color='C3')
+plt.plot(ls,refCL, color='k')
+plt.xlabel(r'$\ell$')
+plt.ylabel(r'$\ell(\ell+1)C_\ell^{BB}/2\pi\,[\mu {\rm K}^2]$')
+
+plt.show()
+print(accCL)
+print(len(accCL))
+
+
+#%%  #Gives the resolution for an NSIDE and the number of pixels.
+def basicmapdet(_NSIDE, _NPIX):     
+    print("Approximate resolution at NSIDE {} is {:.2} deg".format(_NSIDE, hp.nside2resol(_NSIDE, arcmin=True) / 60))
+    print('Number of pixels =',_NPIX)
+
+
+
+
+
+
 
 
 #%%
-Gives the number of pixels
-NPIX = 12*NSIDE**2
-print('Number of pixels =',NPIX)
-
+#Downloads the higher resolution WMAP data into the current directory.
+!healpy_get_wmap_maps.sh
+wmap_map_I = hp.read_map("wmap_band_iqumap_r9_7yr_W_v4.fits")
+hp.write_map("my_map.fits", wmap_map_I, overwrite=True)
 
 #%%
 #RING scheme takes a array where each element is each 
