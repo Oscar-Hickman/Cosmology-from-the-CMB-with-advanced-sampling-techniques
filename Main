@@ -21,29 +21,34 @@ wmap_map_I = hp.read_map("wmap_band_iqumap_r9_7yr_W_v4.fits")
 hp.write_map("my_map.fits", wmap_map_I, overwrite=True)
 
 
-#%% #Use CAMB to generate a power spectrum
-def call_CAMB_map(_parameters, _lmax): #parameters = [H0, ombh2, omch2, mnu, omk, tau] = [Hubble Const, Baryon density, DM density, Sum 3 neutrino masses/eV, Curvature parameter (Omega kappa), Reionisation optical depth]
-
+#Use CAMB to generate a power spectrum
+def call_CAMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
+    '''
+    parameters = [H0, ombh2, omch2, mnu, omk, tau]  = [Hubble Const, Baryon density, DM density, 
+    Sum 3 neutrino masses/eV, Curvature parameter (Omega kappa), Reionisation optical depth]
+    '''
     pars = camb.CAMBparams()
-    pars.set_cosmology(H0 = _parameters[0], ombh2 = _parameters[1], omch2 = _parameters[2], mnu = _parameters[3],
-                   omk = _parameters[4], tau = _parameters[5])
+    pars.set_cosmology(H0 = parameters[0], ombh2 = parameters[1], omch2 = parameters[2], mnu = parameters[3],
+                   omk = parameters[4], tau = parameters[5])
     pars.InitPower.set_params(As=2e-9, ns=0.965, r=0)
-    pars.set_for_lmax(_lmax, lens_potential_accuracy=0);
-    #calculate results for these parameters
+    pars.set_for_lmax(_lmax, lens_potential_accuracy=0)
     results = camb.get_results(pars)
     powers =results.get_cmb_power_spectra(pars, CMB_unit='muK')
-    totCL=powers['total']
-    ls = np.arange(totCL.shape[0])
-
-    pars.set_for_lmax(_lmax, lens_potential_accuracy=2)
-    results = camb.get_results(pars)
-    _accCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
-
-    pars.set_for_lmax(6000, lens_potential_accuracy=4)
-    results = camb.get_results(pars)
-    _refCL = results.get_lensed_scalar_cls(CMB_unit='muK')[:len(ls),2]
-
-    return [_accCL, _refCL]    #returns accCL and refCL ?
+    unlensedCL=powers['unlensed_scalar']
+    _DL = totCL[:,0]  #gives the lensed scalar cls
+    
+    _l = np.arange(len(_DL)) #not sure this CL is actually CL but is actually DL
+    _CL = []
+    for i in range(_lmax): #also limits the length of power spectrum to the requested length
+        if i == 0:
+            _CL.append(_DL[i]) #since unsure what CL value is for this DL
+        
+        else:
+            _CL.append(_DL[i]/(_l[i]*(_l[i] + 1)))
+        
+    _CL = np.array(_CL)    
+    
+    return _CL
 
 
 #%% #PLots a map in the aithoff projection 
@@ -59,7 +64,7 @@ def basicmapdet(_NSIDE, _NPIX):
 
 #%% #Generate a map given a power spectrum
 def genmap(_cls, _NSIDE):   
-    return hp.synfast(_cls,_NSIDE ,lmax = (3*_NSIDE-1), new = True)
+    return hp.synfast(_cls, _NSIDE, new = True)
 
 
 
@@ -111,16 +116,24 @@ def genalms2(_cls, _NSIDE): #does this automatically
     return hp.synalm(_cls, lmax = ((3*_NSIDE)-1), new = True)
 
 
+#%%
+def estimate_cl(_alm):
+
 
 #%% #negative log of the posterior, psi, ignoring the prior term.
-psi =0.5*(d-Ya)(n^-1)*()
+#psi =0.5*(d-Ya)(n^-1)*()
 
 
+#%% #Input Code:
+parameters = [67.74, 0.0486, 0.2589, 0.06, 0.0, 0.066]
+lmax = 1536 
+cls1 = call_CAMB_map(parameters, lmax)
+plotpwrspctrm(cls1)
+NSIDE = 512  #len(cls1)/3   #3*nside = len(cls)
+map1 = genmap(cls1, NSIDE) 
+aithoffmap(map1)
+noisemap1 = noisemap(map1,0.05)
+aithoffmap(noisemap1[0])
+alms1 = genalms2(noisemap1[0],32)
 
-
-
-
-
-
-#%% #Files to run
 
