@@ -34,6 +34,7 @@ def call_CAMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
     pars.set_for_lmax(_lmax, lens_potential_accuracy=0)
     results = camb.get_results(pars)
     powers =results.get_cmb_power_spectra(pars, CMB_unit='muK')
+    totCL=powers['total']
     unlensedCL=powers['unlensed_scalar']
     _DL = totCL[:,0]  #gives the lensed scalar cls
     
@@ -115,9 +116,35 @@ def genalms1(_cls, _NSIDE): #does this manually
 def genalms2(_cls, _NSIDE): #does this automatically
     return hp.synalm(_cls, lmax = ((3*_NSIDE)-1), new = True)
 
+def maptoalms(_map, _lmax):
+    return hp.map2alm(_map, _lmax)
 
 #%%
-def estimate_cl(_alm):
+def estimate_cl(_alms, _lmax):
+    _p = 0
+    _almc = []
+    for l in range(_lmax):
+        _almc.append([])
+        for m in range(l):
+            if m == 0:
+                _almc[l].append(_alms[_p])
+                _p + 1
+                
+            else:
+                _almc[l].append(np.conj(_alms[_p]))
+                _almc[l].append(_alms[_p])
+                _p + 1
+      
+    for i in range(len(_almc)):
+        for j in range(len(_almc[i])):
+            _almc[i][j] = np.absolute(_almc[i][j])**2
+    
+    _CLest = []
+    for l in range(len(_almc)):
+        prod = (1/((2*l)+1))*sum(_almc[i])
+        _CLest.append(prod)
+        
+    return _CLest
 
 
 #%% #negative log of the posterior, psi, ignoring the prior term.
@@ -135,5 +162,5 @@ aithoffmap(map1)
 noisemap1 = noisemap(map1,0.05)
 aithoffmap(noisemap1[0])
 alms1 = genalms2(noisemap1[0],32)
-
+CLestimate1 = estimate_cl(alms1, lmax)
 
