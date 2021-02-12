@@ -1,0 +1,2383 @@
+#Import Packages
+import tensorflow as tf
+import tensorflow_probability as tfp
+#from tensorflow_probability import experimental
+tfd = tfp.distributions
+import numpy as np
+import scipy as sp
+import matplotlib.pyplot as plt
+import healpy as hp
+#import pandas as pd
+import camb 
+from camb import model, initialpower
+import glob
+import pylab as plty
+from PIL import Image
+from healpy.sphtfunc import Alm
+import time 
+import corner
+#import seaborn as sns
+import scipy.stats as st
+from mpl_toolkits.mplot3d import Axes3D
+import os
+import sys
+
+#%%
+#Use CAMB to generate a power spectrum
+def call_CAMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
+    '''
+    parameters = [H0, ombh2, omch2, mnu, omk, tau]  = [Hubble Const, Baryon density, DM density, 
+    Sum 3 neutrino masses/eV, Curvature parameter (Omega kappa), Reionisation optical depth]
+    '''
+    if _lmax <= 2551: #can only find power spectrum for lmax <= 2551 since that is the maximum value of the data.
+        pars = camb.CAMBparams()
+        pars.set_cosmology(H0 = _parameters[0], ombh2 = _parameters[1], omch2 = _parameters[2], mnu = _parameters[3],
+                   omk = _parameters[4], tau = _parameters[5])  #Inputs the given cosmological parameters.
+        pars.InitPower.set_params(As=2e-9, ns=0.965, r=0)
+        pars.set_for_lmax(_lmax, lens_potential_accuracy=0) #input the given lmax value
+        results = camb.get_results(pars)
+        powers =results.get_cmb_power_spectra(pars, CMB_unit='muK') #returns the power spectrum in units muK.
+        totCL=powers['total'] #returns the total (averaged) power spectrum - including lensed, unlensed power spectra 
+        _DL = totCL[:,0] 
+        #unlensedCL=powers['unlensed_scalar'] #returns the unlensed scalar power spectrum
+        #_DL = unlensedCL[:,0] # 
+        _l = np.arange(len(_DL)) #not sure this CL is actually CL but is actually DL
+        _CL = []
+        for i in range(_lmax): #also limits the length of power spectrum to the requested length
+            if i == 0:
+                _CL.append(_DL[i]) #since unsure what CL value is for this DL
+            else:
+                _CL.append(_DL[i]/(_l[i]*(_l[i] + 1)))
+        _CL = np.array(_CL)    
+        return _CL 
+    else: #prints error if lmax is too large.
+        print('lmax value is larger than the available data.')
+
+#%%
+#Plots a given power spectrum 
+def plotpwrspctrm(_cls):
+    _l = np.arange(len(_cls))
+    plt.plot(_l, _l * (_l + 1) * _cls)
+    plt.xlabel("$\l$")
+    plt.ylabel("$\l(\l+1)C_{\l}$")
+    plt.grid()
+    plt.title("Power Spectrum")
+    
+#%%
+#Plots a map in the mollview projection 
+def mollviewmap(_map):
+    hp.mollview(_map, title="Map displayed in the Molleview projection", cmap = None)
+    hp.graticule()
+    
+#%%
+#Adds random noise to each pixel on a map given a variance 
+def noisemapfunc(_map,_var):
+    _noisevec = np.random.normal(0,_var,len(_map)) #A vector of the noise applied to each pixel
+    _newmap = [x + y for x, y in zip(_map, _noisevec)]
+    _newmap, _noisevec = np.array(_newmap), np.array(_noisevec)
+    return [_newmap, _noisevec] #returns an array consisiting of [map with added noise, array of the added noise]
+
+#%%
+#cls --> something
+def cltoalm(_cls, _NSIDE): #doesn't work (isnt currently being used)
+    _alms = []
+    _lmax = (3*_NSIDE)
+    for l in range(_lmax): 
+        if _cls[l] > 0:
+            _alms.append(np.complex(np.random.normal(0,_cls[l]),0))        #set m=0, which is real
+        else:
+            _alms.append(np.complex(0,0))
+        for m in range(l+1): #set positive m's
+            if _cls[l] > 0 and _cls[m] > 0:
+                _alms.append(np.complex(np.random.normal(0,0.5*_cls[l]),np.random.normal(0,0.5*_cls[m])))
+            if _cls[l] > 0 and _cls[m] <= 0:
+                _alms.append(np.complex(np.random.normal(0,0.5*_cls[l]),0))
+            if _cls[l] <= 0 and _cls[m] > 0:
+                _alms.append(np.complex(0,np.random.normal(0,0.5*_cls[m])))
+            else:
+                _alms.append(np.complex(0,0))
+    return _alms   
+
+def hpcltoalm(_cls, _NSIDE): #Healpy generate alms given cls
+    return hp.synalm(_cls, lmax = (3*_NSIDE), new = True)
+
+def cltomap(_cls, _NSIDE): #doesn't work (isnt currently being used)
+    _alm = cltoalm(_cls, _NSIDE)
+    return almtomap(_alm, _NSIDE)
+
+def hpcltomap(_cls, _NSIDE):   #Healpy generate a map given a power spectrum
+    return hp.synfast(_cls, _NSIDE, new=True) 
+
+#%%
+#map --> something
+def maptocl(_map): #does this manually - doesn't work (isnt currently being used)
+    return
+def hpmaptocl(_map): #Generate a power spectrum given cls
+    return hp.anafast(_map, lmax=int(((3*(len(_map)/12)**0.5)-1)))    #lmax = 3NSIDE by default
+
+def maptoalm(_map): #does this manually - doesn't work (isnt currently being used)
+    _omegp = (4*np.pi)/len(_map)
+    _lmax = int(np.sqrt(len(_map)*(3/4)))
+    _NSIDE = int(_lmax/3)
+    _alm = []
+    for l in range(_lmax):
+        for m in range(l+1):
+            _TpYlm = []
+            for i in range(len(_map)):
+                _TpYlm.append(_map[i]*np.conjugate(sphharm(m, l, i, _NSIDE)))
+            _alm.append(_omegp*sum(_TpYlm))
+    return np.array(_alm)
+
+def hpmaptoalm(_map, _lmax): #Healpy generate alms from map. 
+    return hp.map2alm(_map, _lmax)
+
+#%%
+#alm --> something
+def almtocl(_alm,lmax): #alm --> cl using alms in my ordering (different to healpys).
+    _l = np.arange(lmax)
+    _scaling = 1 / ((2*_l + 1))
+    count = 0
+    _new = []
+    _cl = []
+    for l in range(lmax):
+        _new.append([])
+        for m in range(l):
+            if m == 0:
+                _new[l].append(np.absolute(_alm[count])**2)
+                count = count + 1
+            if m > 0:
+                _new[l].append(2*np.absolute(_alm[count])**2)
+                count = count + 1             
+    for i in range(len(_new)):
+        _cl.append(_scaling[i] * sum(_new[i]))   
+    return _cl
+
+def hpalmtocl(_alms, _lmax): #Healpy estimates the power spectrum from the cls.
+    return hp.alm2cl(_alms, lmax = _lmax)
+
+def almtomap(_alm, _NSIDE ):# alm --> map using alms in my ordering (different to healpys).
+    _map = []
+    _Npix = 12*(_NSIDE)**2
+    _lmax = (3*_NSIDE)
+    for i in range(_Npix):
+        _sum = []
+        _count = 0
+        for l in np.arange(0,_lmax):
+            for m in np.arange(0,l+1):
+                if m == 0:
+                    _sum.append(_alm[_count]*sphharm(m,l,i, _NSIDE))
+                    _count = _count + 1
+                else:
+                    _sum.append(2*(np.real(_alm[_count])*np.real(sphharm(m,l,i, _NSIDE)) -
+                                   np.imag(_alm[_count])*np.imag(sphharm(m,l,i, _NSIDE))))
+                    _count = _count + 1
+        _map.append(sum(_sum))
+    return np.real(_map)
+
+def almtomap_tf(_alm, _NSIDE): #alm --> map for tensorflow using alms in my ordering (different to healpys).
+    _map = tf.constant([])
+    _lmax = (3*_NSIDE)
+    for i in range(12*(_NSIDE)**2):
+        _sum = tf.constant([])
+        _count = 0
+        for l in range(_lmax):
+            for m in range(l+1):
+                if m==0:
+                    _sum = tf.concat((_sum,[_alm[_count]*sphharm(m,l,i, _NSIDE)]), axis = 0)
+                    _count = _count + 1
+                else:
+                    _sum = tf.concat((_sum,[2*((np.real(_alm[_count]))*(np.real(sphharm(m,l,i, _NSIDE)))-
+                                               np.imag(_alm[_count])*np.imag(sphharm(m,l,i, _NSIDE)))]), axis = 0)
+                    _count = _count + 1
+        _map = tf.concat((_map,[sum(_sum)]), axis = 0)
+    return tf.convert_to_tensor(_map)
+
+def almtomap_tf2(_alm,_NSIDE):
+    _map = tf.Variable([])
+    _lmax = (3*_NSIDE)
+    _ralm = tf.math.real(_alm) 
+    _ialm = tf.math.imag(_alm) 
+    _rsph = tf.math.real(_sph) 
+    _isph = tf.math.imag(_sph) 
+    _map = tf.Variable(np.array([]))
+    for i in range(12*(_NSIDE)**2):
+        _count = 0
+        _term1 = tf.Variable(0.0,dtype = np.float64)
+        for l in range(_lmax):
+            for m in range(l+1):
+                if m==0:
+                    tf.compat.v1.assign_add(_term1, _ralm[_count]*_rsph[i][_count])
+                    _count = _count + 1
+                else:
+                    tf.compat.v1.assign_add(_term1,2*(_ralm[_count]*_rsph[i][_count] - 
+                                                                  _ialm[_count]*_isph[i][_count]),0.0)
+                    _count = _count + 1
+        _map = tf.concat((_map, [_term1]), axis = 0)
+    _map = tf.dtypes.cast(_map, np.float64)
+    return _map
+
+def almtomap_tf3(_alm,_NSIDE):
+    _ones = np.ones(len(_alm), dtype = np.complex128)
+    _lmax = (3*_NSIDE)
+    _count = 0
+    for l in range(_lmax):
+        for m in range(l+1):     
+            if m == 0:
+                _ones[_count] = np.complex(0.5,0)
+            _count = _count + 1
+    _ones = tf.convert_to_tensor(_ones)  
+    _alm = _ones*_alm
+    _ralm = tf.math.real(_alm) 
+    _ialm = tf.math.imag(_alm) 
+    _rsph = tf.math.real(_sph) 
+    _isph = tf.math.imag(_sph) 
+    _map1 = tf.linalg.matvec(_rsph,_ralm)
+    _map2 = tf.linalg.matvec(_isph,_ialm)
+    _map = 2*(_map1 - _map2)
+    return _map
+
+def hpalmtomap(_alms, _NSIDE):
+    return hp.alm2map(_alms, _NSIDE)
+
+#%%
+#healpy smoothing for the map and the alms
+def hpmapsmooth(_map, _lmax): #smooths a given map with a gaussian beam smoother.
+    return hp.smoothing(_map, lmax = _lmax)
+
+def hpalmsmooth(_alms): #smooths a given set of alms with a gaussian beam smoother.
+    return hp.smoothalm(_alms, fwhm = 0.0)
+
+#%%
+#Joins/splits the alms
+def singulartosplitalm(_alm):
+    _realalm, _imagalm = _alm.real, _alm.imag
+    return [_realalm, _imagalm]
+
+def splittosingularalm(_realalm, _imagalm):
+    _alm = []
+    _ralmcount = 0
+    _ialmcount = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            if m == 0 or m == 1:
+                _alm.append(complex(_realalm[_ralmcount], 0))
+                _ralmcount = _ralmcount + 1
+            else:
+                _alm.append(complex(_realalm[_ralmcount], _imagalm[_ialmcount]))
+                _ralmcount = _ralmcount + 1
+                _ialmcount = _ialmcount + 1       
+    return _alm
+
+def splittosingularalm_tf(_realalm, _imagalm): #takes the real and imaginary parts of the alms and creates a tensor
+    _zero = tf.zeros(1, dtype = np.float64)
+    _count = 0
+    for l in range(lmax): #pads zeros to to lmax = 0 values 
+        for m in range(l + 1):
+            if m == 0 or m == 1: 
+                if l == 0:
+                    _imagalm = tf.concat([_zero,_imagalm], axis = 0)
+                else:
+                    _front = _imagalm[:_count]
+                    _back = _imagalm[_count:]
+                    _term = tf.concat([_zero, _back] , axis = 0)
+                    _imagalm = tf.concat([_front, _term], axis = 0)
+            _count = _count + 1
+    return tf.complex(_realalm,_imagalm)
+
+#%%
+#Retrieves the spherical harmonics for a given, l, m and pixel number
+def sphharm(m, l, _pixno, _NSIDE):
+    _theta, _phi = hp.pix2ang(nside=_NSIDE, ipix=_pixno)
+    return sp.special.sph_harm(m, l, _phi, _theta)
+
+#%%
+#Changes the ordering of the alms from healpy to mine or vice versa
+def almmotho(_moalm, _lmax):
+    '''changing the alm ordering from my ordering to healpys'''
+    _hoalm = []
+    _count4 = []
+    _count5 = 0
+    for i in np.arange(2,_lmax+2):
+        _count4.append(_count5)
+        _count5=_count5+i
+    for i in range(_lmax):
+        _count1 = 0 
+        for j in np.arange(i+1,_lmax+1):
+            _hoalm.append(_moalm[_count1+_count4[i]])
+            _count1 = _count1 + j
+    return np.array(_hoalm)
+
+def almhotmo(_hoalm, _lmax):
+    '''changing the alm ordering from healpys ordering to mine'''
+    _moalm = np.zeros(sum(np.arange(_lmax+1)), dtype = complex)
+    _count4 = []
+    _count5 = 0
+    for i in np.arange(2,_lmax+2):
+        _count4.append(_count5)
+        _count5 = _count5+i
+    _count1 = 0
+    for i in range(_lmax):
+        _count2 = 0    
+        for j in np.arange(i+1,_lmax+1):
+            _moalm[_count2 + _count4[i]] = _hoalm[_count1]
+            _count1 = _count1 + 1
+            _count2 = _count2 + j        
+    return np.array(_moalm)
+
+def multtensor(_lmax,_lenalm):
+    _shape = np.zeros([_lmax,_lenalm]) #matrix for the calculation of the psi in psi_tf
+    _count = 0
+    for i in range(_lmax):
+        for j in np.arange(0,i+1):
+            if j == 0:
+                _shape[i][_count] = 1.0
+                _count = _count + 1
+            else:
+                _shape[i][_count] = 2.0
+                _count = _count + 1
+    return tf.convert_to_tensor(_shape, dtype = np.float64)
+
+#%%
+#negative log of the posterior, psi.
+def psi(_params, _map, _lmax, _Ninv): #unnormalised log probability
+    _lncl, _realalm, _imagalm = [0,0], [], []
+    for i in range(len_cl-2):
+        _lncl.append(_params[i])
+    for i in range(len_ralm):
+        _realalm.append(_params[i + len_cl-2])
+    for i in range(len_ialm-(2*lmax-1)):
+        _imagalm.append(_params[i + len_cl-2 + len_ralm])
+    _d = _map
+    _a = splittosingularalm(_realalm, _imagalm)
+    _Ya = almtomap(_a, int(_lmax/3))
+    _BYa =  _Ya #mapsmooth(_Ya, _lmax)
+    _elem,  _psi1 ,_psi2, _psi3 = [], [], [], []
+    for i in range(len(_d)):
+        _elem.append(_d[i] - _BYa[i])
+        _psi1.append(0.5*(_elem[i]**2)*_Ninv[i]) #first term in the taylor paper 
+    _l = np.arange(lmax)
+    for i in range(len(_lncl)):
+        _psi2.append((_l[i] + 0.5)*(_lncl[i])) #second term in the taylor paper 
+    _a = np.absolute(np.array(_a))**2
+    _as = np.matmul(shape.numpy(),_a)
+    _psi3 = 0.5*_as/np.exp(np.array(_lncl)) #third term in the taylor paper 
+    _psi = sum(_psi1) + sum(_psi2) + sum(_psi3) 
+    print('psi =',-_psi)
+    return _psi
+
+def psi_tf(_params):
+    _map, _lmax, _Ninv = noisemap_tf, lmax, Ninv
+    _lnclstart = tf.zeros(2, np.float64)
+    _lncl = tf.concat([_lnclstart,_params[:(len_cl - 2)]], axis = 0)
+    _realalm = _params[len_cl - 2:(len_ralm + len_cl - 2)]
+    _imagalm = _params[(len_ralm + len_cl - 2):]
+    _d = _map
+    _a = splittosingularalm_tf(_realalm, _imagalm)
+    _Ya = almtomap_tf3(_a, int(_lmax/3))
+    _BYa =  _Ya #mapsmooth(_Ya, _lmax)
+    _elem = _d - _BYa
+    _psi1 = 0.5*(_elem**2)*_Ninv #first term in the taylor paper 
+    _l = tf.range(_lmax, dtype = np.float64)
+    _psi2 = (_l+0.5)*_lncl #second term in the taylor paper 
+    _a = tf.math.abs(_a)**2
+    _as = tf.linalg.matvec(shape,_a)
+    _psi3 = 0.5*_as/tf.math.exp(_lncl) #third term in the taylor paper 
+    _psi = tf.reduce_sum(_psi1) + tf.reduce_sum(_psi2) + tf.reduce_sum(_psi3) 
+    #print('psi =',-_psi)   
+    __psi_record.append(-_psi)
+    return -_psi
+
+#%%
+#Run the normal hmc sampler
+def run_chain_hmc(initial_state, num_results = 25, num_burnin_steps=0): 
+    '''Returns the desired walks through parameter space for a fixed step size.'''
+    return tfp.mcmc.sample_chain(num_results=num_results, num_burnin_steps=num_burnin_steps, 
+                               current_state=initial_state, kernel=hmc_kernel, trace_fn=lambda current_state,
+                               kernel_results: kernel_results)
+
+#Run the nut sampler chain
+def run_chain_nut(initial_state, num_results=1000, num_burnin_steps=0): 
+    '''Returns the desired walks through parameter space for a fixed step size.'''
+    return tfp.mcmc.sample_chain(num_results=num_results, num_burnin_steps=num_burnin_steps, 
+                               current_state=initial_state, kernel=nut_kernel, trace_fn=lambda current_state,
+                               kernel_results: kernel_results)
+
+#%%
+#Trial with parameters 1
+parameters = [67.74, 0.0486, 0.2589, 0.06, 0.0, 0.066] #cosmological parameters.
+lmax1 = 4 #lmax value wanted from data
+NSIDE1 = 2  #len(cls1)/3   #3*nside = len(cls)
+n1 = np.linspace(0.5,0.5,(12*(NSIDE1)**2))
+Ninv1 = []
+for i in range(len(n1)):
+    Ninv1.append(1/(n1[i]**2)) #finds the inverse noise matrix
+cls1 = call_CAMB_map(parameters, lmax1) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls1) #plot of the power spectrum.
+map1 = hpcltomap(cls1, NSIDE1)  #generates a map from the power spectrum
+map1 = hpmapsmooth(map1, lmax1) #applies a gaussian beam smoother to the map
+noisemap1 = noisemapfunc(list(map1),n1[0])[0] #adds noise to the map
+hnoisealms1 = hpmaptoalm(noisemap1,lmax1-1) #computes the alms from the map with noise added.
+noisecl1 = hpalmtocl(hnoisealms1, lmax1-1) #estimates the power spectrum from the given alms.
+plotpwrspctrm(noisecl1) #plots the estimated power spectrum.
+
+#Trial with parameters 2
+lmax2 = 5   #lmax value wanted from data
+NSIDE2 = 2   #len(cls1)/3   #3*nside = len(cls)
+n2 = np.linspace(0.5,0.5,(12*(NSIDE2)**2))
+Ninv2 = []
+for i in range(len(n2)):
+    Ninv2.append(1/(n2[i]**2)) #finds the inverse noise matrix
+cls2 = call_CAMB_map(parameters, lmax2) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls2) #plot of the power spectrum.
+map2 = hpcltomap(cls2, NSIDE2)  #generates a map from the power spectrum
+map2 = hpmapsmooth(map2, lmax2) #applies a gaussian beam smoother to the map
+noisemap2 = noisemapfunc(map2,n2[0])[0] #adds noise to the map
+hnoisealms2 = hpmaptoalm(noisemap2,lmax2-1) #computes the alms from the map with noise added.
+noisecl2 = hpalmtocl(hnoisealms2, lmax2-1) #estimates the power spectrum from the given alms.
+plotpwrspctrm(noisecl2) #plots the estimated power spectrum.
+
+#Trial with parameters 3
+lmax3 = 6  #lmax value wanted from data
+NSIDE3 = 2  #len(cls1)/3   #3*nside = len(cls)
+n3 = np.linspace(0.5,0.5,(12*(NSIDE3)**2))
+Ninv3 = []
+for i in range(len(n3)):
+    Ninv3.append(1/(n3[i]**2)) #finds the inverse noise matrix
+cls3 = call_CAMB_map(parameters, lmax3) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls3) #plot of the power spectrum.
+map3 = hpcltomap(cls3, NSIDE3)  #generates a map from the power spectrum
+map3 = hpmapsmooth(map3, lmax3) #applies a gaussian beam smoother to the map
+noisemap3 = noisemapfunc(map3,n3[0])[0] #adds noise to the map
+hnoisealms3 = hpmaptoalm(noisemap3,lmax3-1) #computes the alms from the map with noise added.
+noisecl3 = hpalmtocl(hnoisealms3, lmax3-1) #estimates the power spectrum from the given alms.
+plotpwrspctrm(noisecl3) #plots the estimated power spectrum.
+
+#Trial with parameters 4
+lmax4 = 11  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.5,0.5,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+
+#Trial with parameters 5
+lmax5 = 12  #lmax value wanted from data
+NSIDE5 = 4  #len(cls1)/3   #3*nside = len(cls)
+n5 = np.linspace(0.5,0.5,(12*(NSIDE5)**2))
+Ninv5 = []
+for i in range(len(n5)):
+    Ninv5.append(1/(n5[i]**2)) #finds the inverse noise matrix
+cls5 = call_CAMB_map(parameters, lmax5) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls5) #plot of the power spectrum.
+map5 = hpcltomap(cls5, NSIDE5)  #generates a map from the power spectrum
+map5 = hpmapsmooth(map5, lmax5) #applies a gaussian beam smoother to the map
+noisemap5 = noisemapfunc(map5, n5[0])[0] #adds noise to the map
+hnoisealms5 = hpmaptoalm(noisemap5, lmax5 -1) #alms in my ordering
+noisecl5 = hpalmtocl(hnoisealms5, lmax5 - 1) #
+plotpwrspctrm(noisecl5) #plots the estimated power spectrum.
+
+#Trial with parameters 6
+lmax6 = 13  #lmax value wanted from data
+NSIDE6 = 4  #len(cls1)/3   #3*nside = len(cls)
+n6 = np.linspace(0.5,0.5,(12*(NSIDE6)**2))
+Ninv6 = []
+for i in range(len(n6)):
+    Ninv6.append(1/(n6[i]**2)) #finds the inverse noise matrix
+cls6 = call_CAMB_map(parameters, lmax6) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls6) #plot of the power spectrum.
+map6 = hpcltomap(cls6, NSIDE6)  #generates a map from the power spectrum
+map6 = hpmapsmooth(map6, lmax6) #applies a gaussian beam smoother to the map
+noisemap6 = noisemapfunc(map6,n6[0])[0] #adds noise to the map
+hnoisealms6 = hpmaptoalm(noisemap6, lmax6 - 1) #alms in my ordering
+noisecl6 = hpalmtocl(hnoisealms6, lmax6 - 1) #
+plotpwrspctrm(noisecl6) #plots the estimated power spectrum.
+
+#Trial with parameters 7
+lmax7 = 17  #lmax value wanted from data
+NSIDE7 = 6  #len(cls1)/3   #3*nside = len(cls)
+n7 = np.linspace(0.5,0.5,(12*(NSIDE7)**2))
+Ninv7 = []
+for i in range(len(n7)):
+    Ninv7.append(1/(n7[i]**2)) #finds the inverse noise matrix
+cls7 = call_CAMB_map(parameters, lmax7) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls7) #plot of the power spectrum.
+map7 = hpcltomap(cls7, NSIDE7)  #generates a map from the power spectrum
+map7 = hpmapsmooth(map7, lmax7) #applies a gaussian beam smoother to the map
+noisemap7 = noisemapfunc(map7,n7[0])[0] #adds noise to the map
+hnoisealms7 = hpmaptoalm(noisemap7, lmax7 - 1) #alms in my ordering
+noisecl7 = hpalmtocl(hnoisealms7, lmax7 - 1) #
+plotpwrspctrm(noisecl7) #plots the estimated power spectrum.
+
+#Trial with parameters 8
+lmax8 = 18  #lmax value wanted from data
+NSIDE8 = 6  #len(cls1)/3   #3*nside = len(cls)
+n8 = np.linspace(0.5,0.5,(12*(NSIDE8)**2))
+Ninv8 = []
+for i in range(len(n8)):
+    Ninv8.append(1/(n8[i]**2)) #finds the inverse noise matrix
+cls8 = call_CAMB_map(parameters, lmax8) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls8) #plot of the power spectrum.
+map8 = hpcltomap(cls8, NSIDE8)  #generates a map from the power spectrum
+map8 = hpmapsmooth(map8, lmax8) #applies a gaussian beam smoother to the map
+noisemap8 = noisemapfunc(map8,n8[0])[0] #adds noise to the map
+hnoisealms8 = hpmaptoalm(noisemap8, lmax8 - 1) #alms in my ordering
+noisecl8 = hpalmtocl(hnoisealms8, lmax8 - 1) #
+plotpwrspctrm(noisecl8) #plots the estimated power spectrum.
+
+#Trial with parameters 9
+lmax9 = 19  #lmax value wanted from data
+NSIDE9 = 6  #len(cls1)/3   #3*nside = len(cls)
+n9 = np.linspace(0.5,0.5,(12*(NSIDE9)**2))
+Ninv9 = []
+for i in range(len(n9)):
+    Ninv9.append(1/(n9[i]**2)) #finds the inverse noise matrix
+cls9 = call_CAMB_map(parameters, lmax8) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls9) #plot of the power spectrum.
+map9 = hpcltomap(cls9, NSIDE9)  #generates a map from the power spectrum
+map9 = hpmapsmooth(map9, lmax9) #applies a gaussian beam smoother to the map
+noisemap9 = noisemapfunc(map9, n9[0])[0] #adds noise to the map
+hnoisealms9 = hpmaptoalm(noisemap9, lmax9 - 1) #alms in my ordering
+noisecl9 = hpalmtocl(hnoisealms9, lmax9 - 1) #
+plotpwrspctrm(noisecl9) #plots the estimated power spectrum.
+
+#%%
+#inital values for the optimisation of psi (with the values from parameters5)
+_number = 5
+
+if _number == 1:
+    lmax = lmax1
+    NSIDE = NSIDE1
+    noisemap = noisemap1
+    clinit = noisecl1
+    noisealm = almhotmo(hnoisealms1,lmax1)
+    Ninv = Ninv1
+    orig_map = map1
+    orig_cls = cls1
+if _number == 2:
+    lmax = lmax2
+    NSIDE = NSIDE2
+    noisemap = noisemap2
+    clinit = noisecl2
+    noisealm = almhotmo(hnoisealms2,lmax2)
+    Ninv = Ninv2
+    orig_map = map2
+    orig_cls = cls2
+if _number == 3:
+    lmax = lmax3
+    NSIDE = NSIDE3
+    noisemap = noisemap3
+    clinit = noisecl3
+    noisealm = almhotmo(hnoisealms3,lmax3)
+    Ninv = Ninv3
+    orig_map = map3
+    orig_cls = cls3
+if _number == 4:
+    lmax = lmax4
+    NSIDE = NSIDE4
+    noisemap = noisemap4
+    clinit = noisecl4
+    noisealm = almhotmo(hnoisealms4,lmax4)
+    Ninv = Ninv4
+    orig_map = map4
+    orig_cls = cls4
+if _number == 5:
+    lmax = lmax5
+    NSIDE = NSIDE5
+    noisemap = noisemap5
+    clinit = noisecl5
+    noisealm = almhotmo(hnoisealms5,lmax5)
+    Ninv = Ninv5
+    orig_map = map5
+    orig_cls = cls5
+if _number == 6:
+    lmax = lmax6
+    NSIDE = NSIDE6
+    noisemap = noisemap6
+    clinit = noisecl6
+    noisealm = almhotmo(hnoisealms6,lmax6)
+    Ninv = Ninv6
+    orig_map = map6
+    orig_cls = cls6
+if _number == 7:
+    lmax = lmax7
+    NSIDE = NSIDE7
+    noisemap = noisemap7
+    clinit = noisecl7
+    noisealm = almhotmo(hnoisealms7,lmax7)
+    Ninv = Ninv7
+    orig_map = map7
+    orig_cls = cls7
+if _number == 8:
+    lmax = lmax8
+    NSIDE = NSIDE8
+    noisemap = noisemap8
+    clinit = noisecl8
+    noisealm = almhotmo(hnoisealms8,lmax8)
+    Ninv = Ninv8
+    orig_map = map8
+    orig_cls = cls8
+if _number == 9:
+    lmax = lmax9
+    NSIDE = NSIDE9
+    noisemap = noisemap9
+    clinit = noisecl9
+    noisealm = almhotmo(hnoisealms9,lmax9)
+    Ninv = Ninv9
+    orig_map = map9
+    orig_cls = cls9
+_sph = []
+for i in range(int((NSIDE**2)*12)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+
+#%%
+#Investigate the time taken for one step for the NUTS, as a function of its inputs.
+times = []
+count = 0
+for i in range(5): #i is the step size (in multiples of 0.02*(i)**3).
+    for k in range(5):
+        __psi_record = []
+        starttime = time.time()
+        nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.02*(i**3), max_tree_depth=10, 
+                                             max_energy_diff=(1000*k), unrolled_leapfrog_steps=1, parallel_iterations=10)
+        samples1, kernel_results1 = run_chain_nut(x0_tf) #Runs the chain
+        finishtime = time.time()
+        timetaken = finishtime - starttime
+        print('Time taken =', timetaken)
+        times.append(timetaken)
+        print('count =',count)
+        count = count + 1
+
+
+#%%
+#Plot the time taken for one NUTS step as a funciton of its inputs.
+fig = plt.figure()
+ax = fig.add_subplot(111, projection = '3d')
+x = np.arange(0,5)
+y = np.arange(0,5000,1000)
+X, Y = np.meshgrid(x,y)
+Z = (np.array(times)).reshape(X.shape)
+ax.plot_surface(X, Y, Z)
+ax.set_xlabel('Step Size:')
+ax.set_ylabel('Max Energy Difference:')
+ax.set_zlabel('Time for two samples:')
+
+
+#%%
+#Runs eight different chains with lmax = 12, NSIDE = 4
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.2,0.2,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start1 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples1, kernel_results1 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results1.is_accepted.numpy().mean()) 
+finish1 = time.time()
+print('Time taken1 =', finish1 - start1)
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(5,5,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+psis1 = __psi_record
+__psi_record = []
+start2 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples2, kernel_results2 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results2.is_accepted.numpy().mean()) 
+finish2 = time.time()
+print('Time taken2 =', finish2 - start2)
+psis2 = __psi_record
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.01,0.01,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start3 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples3, kernel_results3 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results3.is_accepted.numpy().mean()) 
+finish3 = time.time()
+print('Time taken3 =', finish3 - start3)
+psis3 = __psi_record
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.2,0.2,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = np.arange(len(noisemap4)) #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start4 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples4, kernel_results4 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results4.is_accepted.numpy().mean()) 
+finish4 = time.time()
+print('Time taken4 =', finish4 - start4)
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(10,10,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start5 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples5, kernel_results5 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results5.is_accepted.numpy().mean()) 
+finish5= time.time()
+print('Time taken5 =', finish5- start5)
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(3,3,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start6 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples6, kernel_results6 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results6.is_accepted.numpy().mean()) 
+finish6= time.time()
+print('Time taken6 =', finish6 - start6)
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.001,0.001,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start7 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples7, kernel_results7 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results7.is_accepted.numpy().mean()) 
+finish7= time.time()
+print('Time taken7 =', finish7 - start7)
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(100,100,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start8 = time.time()
+nut_kernel = tfp.mcmc.NoUTurnSampler(target_log_prob_fn=psi_tf, step_size=0.1, max_tree_depth=10, max_energy_diff=1000.0, unrolled_leapfrog_steps=2, parallel_iterations=10)
+samples8, kernel_results8 = run_chain_nut(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results8.is_accepted.numpy().mean()) 
+finish8 = time.time()
+print('Time taken8 =', finish8- start8)
+
+
+#%%
+#Investigate the time taken as a function of lmax
+lmax4 = 6  #lmax value wanted from data
+NSIDE4 = 2  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.5,0.5,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start5 = time.time()
+hmc_kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=psi_tf, step_size=0.01, num_leapfrog_steps=5)#, state_gradients_are_stopped=True)
+samples5, kernel_results5 = run_chain_hmc(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results5.is_accepted.numpy().mean()) 
+finish5= time.time()
+print('Time taken5 =', finish5- start5)
+
+
+
+lmax4 = 12  #lmax value wanted from data
+NSIDE4 = 4  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.5,0.5,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start6 = time.time()
+hmc_kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=psi_tf, step_size=0.01, num_leapfrog_steps=5)#, state_gradients_are_stopped=True)
+samples6, kernel_results6 = run_chain_hmc(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results6.is_accepted.numpy().mean()) 
+finish6= time.time()
+print('Time taken6 =', finish6 - start6)
+
+
+
+lmax4 = 18  #lmax value wanted from data
+NSIDE4 = 6  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.5,0.5,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start7 = time.time()
+hmc_kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=psi_tf, step_size=0.01, num_leapfrog_steps=5)#, state_gradients_are_stopped=True)
+samples7, kernel_results7 = run_chain_hmc(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results7.is_accepted.numpy().mean()) 
+finish7= time.time()
+print('Time taken7 =', finish7 - start7)
+
+
+
+lmax4 = 24  #lmax value wanted from data
+NSIDE4 = 8  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.5,0.5,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start8 = time.time()
+hmc_kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=psi_tf, step_size=0.01, num_leapfrog_steps=5)#, state_gradients_are_stopped=True)
+samples8, kernel_results8 = run_chain_hmc(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results8.is_accepted.numpy().mean()) 
+finish8 = time.time()
+print('Time taken8 =', finish8 - start8)
+
+
+lmax4 = 30  #lmax value wanted from data
+NSIDE4 = 10  #len(cls1)/3   #3*nside = len(cls)
+n4 = np.linspace(0.5,0.5,(12*(NSIDE4)**2))
+Ninv4 = []
+for i in range(len(n4)):
+    Ninv4.append(1/(n4[i]**2)) #finds the inverse noise matrix
+cls4 = call_CAMB_map(parameters, lmax4) #power spectrum for the given parameters and lmax.
+plotpwrspctrm(cls4) #plot of the power spectrum.
+map4 = hpcltomap(cls4, NSIDE4)  #generates a map from the power spectrum
+map4 = hpmapsmooth(map4, lmax4) #applies a gaussian beam smoother to the map
+noisemap4 = noisemapfunc(map4,n4[0])[0] #adds noise to the map
+hnoisealms4 = hpmaptoalm(noisemap4, lmax4-1) #alms in my ordering
+noisecl4 = hpalmtocl(hnoisealms4, lmax4-1) #
+plotpwrspctrm(noisecl4) #plots the estimated power spectrum.
+lmax = lmax4
+NSIDE = NSIDE4
+noisemap = noisemap4
+clinit = noisecl4
+noisealm = almhotmo(hnoisealms4,lmax4)
+Ninv = Ninv4
+orig_map = map4
+orig_cls = cls4
+NSIDE = int(lmax/3)
+_sph = []
+for i in range(int((lmax**2)*4/3)):
+    _sph.append([])
+    _count = 0
+    for l in range(lmax):
+        for m in range(l+1):
+            _theta, _phi = hp.pix2ang(nside=NSIDE, ipix=i)
+            _sph[i].append(sp.special.sph_harm(m, l, _phi, _theta))
+            if l==0:    
+                _sph[i][_count] = np.complex(np.real(_sph[i][_count]),np.float64(0.0))
+            _count = _count + 1 
+_sph = tf.convert_to_tensor(_sph, dtype = np.complex128)
+noisemap_tf = tf.convert_to_tensor(noisemap, dtype = np.float64)
+realalminit = noisealm.real
+imagalminit = noisealm.imag
+x0 = []
+len_cl = len(clinit)
+len_ralm = len(realalminit)
+len_ialm = len(imagalminit)
+shape = multtensor(lmax,len_ralm) #A tensor for the spherical harmonics in the maptoalm_tf function
+for i in range(len_cl-2):
+    if clinit[i+2] > 0:
+        x0.append(np.log(clinit[i+2]))
+    else:
+        x0.append(0)
+for i in range(len(realalminit)):
+        x0.append(realalminit[i])
+_count = 0
+for l in range(lmax):
+    for m in range(l + 1):
+        if m!= 0 and m != 1:
+            x0.append(imagalminit[_count])
+        _count = _count + 1
+psi(x0,noisemap,lmax,Ninv)
+x0_tf = tf.convert_to_tensor(x0, dtype = np.float64)
+__psi_record = []
+psi_tf(x0_tf)
+__psi_record = []
+start9 = time.time()
+hmc_kernel = tfp.mcmc.HamiltonianMonteCarlo(target_log_prob_fn=psi_tf, step_size=0.01, num_leapfrog_steps=5)#, state_gradients_are_stopped=True)
+samples9, kernel_results9 = run_chain_hmc(x0_tf) #Runs the chain
+print("Acceptance rate:", kernel_results9.is_accepted.numpy().mean()) 
+finish9 = time.time()
+print('Time taken8 =', finish9 - start9)
+
+
+#%%
+#save the chains to a file called 'test.txt' in case of crashes
+a_file = open('test.txt', 'w')
+stuff = np.stack((samples1, samples2, samples3, samples4, samples5, samples6, samples7,
+          samples8), axis = 0)
+for row in stuff:
+    np.savetxt(a_file, row)
+    
+
+#%%
+#load the chains from the file 
+allsamples = np.loadtxt('test.txt').reshape(8,1000, 143)
+samples1, samples2 = tf.constant(allsamples[0]), tf.constant(allsamples[1])
+samples3, samples4 = tf.constant(allsamples[2]), tf.constant(allsamples[3])
+samples5, samples6 = tf.constant(allsamples[4]), tf.constant(allsamples[5])
+samples7, samples8 = tf.constant(allsamples[6]), tf.constant(allsamples[7])
+
+
+#%%
+#take the final 200 samples for each of the chains
+#samples1 = samples1[500:]
+samples2 = samples2[:200]
+#samples3 = samples3[500:]
+#samples4 = samples4[500:]
+samples5 = samples5[:200]
+samples6 = samples6[:200]
+#samples7 = samples7[500:]
+samples8 = samples8[:200]
+
+
+#%%
+#Find the Gelman-Rubin value for the eight chains.
+#samplesnp1 = samples1.numpy()
+samplesnp2 = samples2.numpy()
+#samplesnp3 = samples3.numpy()
+#samplesnp4 = samples4.numpy()
+samplesnp5 = samples5.numpy()
+samplesnp6 = samples6.numpy()
+#samplesnp7 = samples7.numpy()
+samplesnp8 = samples8.numpy()
+rhattest = []
+for i in range(len(samplesnp2)):
+    rhattest.append([])
+    #rhattest[i].append(samples1[i])
+    rhattest[i].append(samples2[i])
+    #rhattest[i].append(samples3[i])
+    #rhattest[i].append(samples4[i])
+    rhattest[i].append(samples5[i])
+    rhattest[i].append(samples6[i])
+    #rhattest[i].append(samples7[i])
+    rhattest[i].append(samples8[i])
+rhattest_tf = tf.convert_to_tensor(rhattest)
+print(rhattest_tf)
+rhat = tfp.mcmc.diagnostic.potential_scale_reduction(rhattest_tf)
+print(rhat)
+
+
+#%%
+#Effective sample size of the mcmc chain(is a lower bound)
+ess = tfp.mcmc.effective_sample_size(samples8, filter_beyond_positive_pairs=True)
+print(ess)
+
+
+#%%
+#Plots the Gelman-Rubin value for the eight chains as a function of steps.
+parameterno = 4
+rubins = []
+for i in range(len(rhattest_tf)-2):
+        rubins.append(tfp.mcmc.diagnostic.potential_scale_reduction(rhattest_tf[:(i+2)])[parameterno])
+plt.figure()
+plt.plot(np.arange(len(rhattest_tf)-2),rubins)
+plt.ylim(0)
+plt.grid()
+plt.xlabel('Step:')
+plt.ylabel('Gelman-Rubin Value:')
+plt.title('Rhat for C4 as a function of number of steps with 8 chain NUTS, lmax = 12, NSIDE = 4:')
+plt.show()
+
+
+#%%
+#Histogram of the Gelman-Rubin values of all the parameters for eight chains.
+plt.hist(rhat.numpy(), bins = 'auto', density = True)
+plt.xlabel('Gelmann-Rubin Value:')
+plt.ylabel('Probability Density:')
+
+
+#%%
+#Plots the cl means for each of the chains
+lncl_samples1 = tf.slice(samples1,[0,0],[len(samples1),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples1 = tf.math.exp(lncl_samples1)
+_zer1 = tf.constant(0, dtype = np.float64)
+mean_cl1 = [tf.math.reduce_mean(cl_samples1[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl1 = [tf.math.reduce_std(cl_samples1[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl1.insert(0,_zer1), mean_cl1.insert(0,_zer1)
+std_cl1.insert(0, _zer1), std_cl1.insert(0,_zer1)
+plt.figure()
+plotpwrspctrm(mean_cl1) # Plot of the mean sampled cls
+plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+plt.errorbar(ell,(ell*(ell+1)*mean_cl1),xerr = 0, yerr = (ell*(ell+1)*std_cl1))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+plt.show()
+plt.figure(figsize = [10,8])
+[plt.hist((cl_samples1[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+lncl_samples2 = tf.slice(samples2,[0,0],[len(samples2),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples2 = tf.math.exp(lncl_samples2)
+_zer2 = tf.constant(0, dtype = np.float64)
+mean_cl2 = [tf.math.reduce_mean(cl_samples2[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl2 = [tf.math.reduce_std(cl_samples2[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl2.insert(0,_zer2), mean_cl2.insert(0,_zer2)
+std_cl2.insert(0, _zer2), std_cl2.insert(0,_zer2)
+#plt.figure()
+#plotpwrspctrm(mean_cl2) # Plot of the mean sampled cls
+#plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+#plt.errorbar(ell,(ell*(ell+1)*mean_cl2),xerr = 0, yerr = (ell*(ell+1)*std_cl2))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+#plt.show()
+#plt.figure(figsize = [10,8])
+#[plt.hist((cl_samples2[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+lncl_samples3 = tf.slice(samples3,[0,0],[len(samples3),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples3 = tf.math.exp(lncl_samples3)
+_zer3 = tf.constant(0, dtype = np.float64)
+mean_cl3 = [tf.math.reduce_mean(cl_samples3[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl3 = [tf.math.reduce_std(cl_samples3[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl3.insert(0,_zer3), mean_cl3.insert(0,_zer3)
+std_cl3.insert(0, _zer3), std_cl3.insert(0,_zer3)
+#plt.figure()
+#plotpwrspctrm(mean_cl3) # Plot of the mean sampled cls
+#plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+#plt.errorbar(ell,(ell*(ell+1)*mean_cl3),xerr = 0, yerr = (ell*(ell+1)*std_cl3))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+#plt.show()
+#plt.figure(figsize = [10,8])
+#[plt.hist((cl_samples3[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+lncl_samples4 = tf.slice(samples4,[0,0],[len(samples4),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples4 = tf.math.exp(lncl_samples4)
+_zer4 = tf.constant(0, dtype = np.float64)
+mean_cl4 = [tf.math.reduce_mean(cl_samples3[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl4 = [tf.math.reduce_std(cl_samples3[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl4.insert(0,_zer4), mean_cl4.insert(0,_zer4)
+std_cl4.insert(0, _zer4), std_cl4.insert(0,_zer4)
+#plt.figure()
+#plotpwrspctrm(mean_cl4) # Plot of the mean sampled cls
+#plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+#plt.errorbar(ell,(ell*(ell+1)*mean_cl4),xerr = 0, yerr = (ell*(ell+1)*std_cl4))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+#plt.show()
+#plt.figure(figsize = [10,8])
+#[plt.hist((cl_samples4[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+lncl_samples5 = tf.slice(samples5,[0,0],[len(samples5),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples5 = tf.math.exp(lncl_samples5)
+_zer5 = tf.constant(0, dtype = np.float64)
+mean_cl5 = [tf.math.reduce_mean(cl_samples5[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl5 = [tf.math.reduce_std(cl_samples5[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl5.insert(0,_zer5), mean_cl5.insert(0,_zer5)
+std_cl5.insert(0, _zer5), std_cl5.insert(0,_zer5)
+#plt.figure()
+#plotpwrspctrm(mean_cl5) # Plot of the mean sampled cls
+#plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+#plt.errorbar(ell,(ell*(ell+1)*mean_cl5),xerr = 0, yerr = (ell*(ell+1)*std_cl5))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+#plt.show()
+#plt.figure(figsize = [10,8])
+#[plt.hist((cl_samples5[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+lncl_samples6 = tf.slice(samples6,[0,0],[len(samples6),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples6 = tf.math.exp(lncl_samples6)
+_zer6 = tf.constant(0, dtype = np.float64)
+mean_cl6 = [tf.math.reduce_mean(cl_samples6[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl6 = [tf.math.reduce_std(cl_samples6[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl6.insert(0,_zer6), mean_cl6.insert(0,_zer6)
+std_cl6.insert(0, _zer6), std_cl6.insert(0,_zer6)
+#plt.figure()
+#plotpwrspctrm(mean_cl6) # Plot of the mean sampled cls
+#plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+#plt.errorbar(ell,(ell*(ell+1)*mean_cl6),xerr = 0, yerr = (ell*(ell+1)*std_cl6))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+#plt.show()
+#plt.figure(figsize = [10,8])
+#[plt.hist((cl_samples6[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+lncl_samples7 = tf.slice(samples7,[0,0],[len(samples7),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples7 = tf.math.exp(lncl_samples7)
+_zer7 = tf.constant(0, dtype = np.float64)
+mean_cl7 = [tf.math.reduce_mean(cl_samples7[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl7 = [tf.math.reduce_std(cl_samples7[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl7.insert(0,_zer7), mean_cl7.insert(0,_zer7)
+std_cl7.insert(0, _zer7), std_cl7.insert(0,_zer7)
+#plt.figure()
+#plotpwrspctrm(mean_cl7) # Plot of the mean sampled cls
+#plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+#plt.errorbar(ell,(ell*(ell+1)*mean_cl7),xerr = 0, yerr = (ell*(ell+1)*std_cl7))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+#plt.show()
+#plt.figure(figsize = [10,8])
+#[plt.hist((cl_samples7[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+lncl_samples8 = tf.slice(samples8,[0,0],[len(samples8),lmax-2]) #The sampled cls from the adaptive step size HMC
+cl_samples8 = tf.math.exp(lncl_samples8)
+_zer8 = tf.constant(0, dtype = np.float64)
+mean_cl8 = [tf.math.reduce_mean(cl_samples8[:,i])  for i in range(lmax-2)] #The mean of the sampled cls from the adaptive step size HMC
+std_cl8 = [tf.math.reduce_std(cl_samples8[:,i])  for i in range(lmax-2)] #The standard deviation of the = sampled cls from the adaptive step size HMC
+mean_cl8.insert(0,_zer8), mean_cl8.insert(0,_zer8)
+std_cl8.insert(0, _zer8), std_cl8.insert(0,_zer8)
+#plt.figure()
+#plotpwrspctrm(mean_cl8) # Plot of the mean sampled cls
+#plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+#plt.errorbar(ell,(ell*(ell+1)*mean_cl8),xerr = 0, yerr = (ell*(ell+1)*std_cl8))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+#plt.show()
+#plt.figure(figsize = [10,8])
+#[plt.hist((cl_samples8[:,i].numpy()), bins = 'auto') for i in range(lmax-2)] #Histogram of the sampled cls for each l value.
+plt.legend((r'$\ell$ = 0','$\ell$ = 1','$\ell$ = 2','$\ell$ = 3','$\ell$ = 4','$\ell$ = 5'))
+plt.grid()
+plt.xlabel('Data:')
+plt.ylabel('Number of Instances:')
+plt.title('The sampling incidents of the HMC for each cl:')
+plt.show()
+
+#%%
+#Plots the total mean of the cls 
+#mean_clnp1 = []
+mean_clnp2 = []
+#mean_clnp3 = []
+#mean_clnp4 = []
+mean_clnp5 = []
+mean_clnp6 = []
+#mean_clnp7 = []
+mean_clnp8 = []
+#std_clnp1 = []
+std_clnp2 = []
+#std_clnp3 = []
+#std_clnp4 = []
+std_clnp5 = []
+std_clnp6 = []
+#std_clnp7 = []
+std_clnp8 = []
+for i in range(len(mean_cl2)):
+    #mean_clnp1.append(mean_cl1[i].numpy())
+    mean_clnp2.append(mean_cl2[i].numpy())
+    #mean_clnp3.append(mean_cl3[i].numpy())
+    #mean_clnp4.append(mean_cl4[i].numpy())
+    mean_clnp5.append(mean_cl5[i].numpy())
+    mean_clnp6.append(mean_cl6[i].numpy())
+    #mean_clnp7.append(mean_cl7[i].numpy())
+    mean_clnp8.append(mean_cl8[i].numpy())
+    #std_clnp1.append(std_clnp1)
+    std_clnp2.append(std_clnp2)
+    #std_clnp3.append(std_clnp3)
+    #std_clnp4.append(std_clnp4)
+    std_clnp5.append(std_clnp5)
+    std_clnp6.append(std_clnp6)
+    #std_clnp7.append(std_clnp7)
+    std_clnp8.append(std_clnp8)
+#mean_clnp1 = np.array(mean_clnp1)
+mean_clnp2 = np.array(mean_clnp2)
+#mean_clnp3 = np.array(mean_clnp3)
+#mean_clnp4 = np.array(mean_clnp4)
+mean_clnp5 = np.array(mean_clnp5)
+mean_clnp6 = np.array(mean_clnp6)
+#mean_clnp7 = np.array(mean_clnp7)
+mean_clnp8 = np.array(mean_clnp8)
+#std_clnp1 = np.array(std_clnp1)
+std_clnp2 = np.array(std_clnp2)
+#std_clnp3 = np.array(std_clnp3)
+#std_clnp4 = np.array(std_clnp4)
+std_clnp5 = np.array(std_clnp5)
+std_clnp6 = np.array(std_clnp6)
+#std_clnp7 = np.array(std_clnp7)
+std_clnp8 = np.array(std_clnp8)
+mean_cl_chain = (1/4)*(mean_clnp2 + mean_clnp5 + mean_clnp6 + mean_clnp8) #The mean of the sampled cls from the adaptive step size HMC
+std_cl_chain = (std_clnp2**2 + std_clnp5**2 + std_clnp6**2 + std_clnp8**2)**0.5  #The standard deviation of the = sampled cls from the adaptive step size HMC
+plt.figure()
+plotpwrspctrm(mean_cl_chain) # Plot of the mean sampled cls
+plotpwrspctrm(orig_cls) #Plot of the original cls
+ell = np.arange(lmax)
+plt.errorbar(ell,(ell*(ell+1)*mean_cl_chain),xerr = 0, yerr = (ell*(ell+1)*std_cl_chain))
+plt.grid()
+plt.legend(('final cls','inital cls'))
+plt.show()
+
+#%%
+#alms and maps from the samples
+'''
+ralm_samples1 = tf.slice(samples1,[0,lmax-2],[len(samples1),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples1 = tf.slice(samples1,[0,(lmax-2 + len_ralm)],[len(samples1),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm1 = [tf.math.reduce_mean(ralm_samples1[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm1 = [tf.math.reduce_mean(ialm_samples1[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm1 = [tf.math.reduce_std(ralm_samples1[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm1 = [tf.math.reduce_std(ialm_samples1[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm1 = splittosingularalm_tf(mean_ralm1, mean_ialm1) 
+hmean_alm1 = almmotho(mean_alm1,lmax)
+mean_map1 = almtomap(hmean_alm1,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map1) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map1)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map1)
+print('Absolute Difference =', abs(orig_map - mean_map1))
+'''
+
+ralm_samples2 = tf.slice(samples2,[0,lmax-2],[len(samples2),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples2 = tf.slice(samples2,[0,(lmax-2 + len_ralm)],[len(samples2),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm2 = [tf.math.reduce_mean(ralm_samples2[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm2 = [tf.math.reduce_mean(ialm_samples2[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm2 = [tf.math.reduce_std(ralm_samples2[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm2 = [tf.math.reduce_std(ialm_samples2[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm2 = splittosingularalm_tf(mean_ralm2, mean_ialm2) 
+hmean_alm2 = almmotho(mean_alm2,lmax)
+mean_map2 = almtomap(hmean_alm2,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map2) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map2)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map2)
+print('Absolute Difference =', abs(orig_map - mean_map2))
+
+'''
+ralm_samples3 = tf.slice(samples3,[0,lmax-2],[len(samples3),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples3 = tf.slice(samples3,[0,(lmax-2 + len_ralm)],[len(samples3),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm3 = [tf.math.reduce_mean(ralm_samples3[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm3 = [tf.math.reduce_mean(ialm_samples3[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm3 = [tf.math.reduce_std(ralm_samples3[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm3 = [tf.math.reduce_std(ialm_samples3[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm3 = splittosingularalm_tf(mean_ralm3, mean_ialm3) 
+hmean_alm3 = almmotho(mean_alm3,lmax)
+mean_map3 = almtomap(hmean_alm3,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map3) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map3)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map3)
+print('Absolute Difference =', abs(orig_map - mean_map3))
+'''
+'''
+ralm_samples4 = tf.slice(samples4,[0,lmax-2],[len(samples4),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples4 = tf.slice(samples4,[0,(lmax-2 + len_ralm)],[len(samples4),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm4 = [tf.math.reduce_mean(ralm_samples4[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm4 = [tf.math.reduce_mean(ialm_samples4[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm4 = [tf.math.reduce_std(ralm_samples4[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm4 = [tf.math.reduce_std(ialm_samples4[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm4 = splittosingularalm_tf(mean_ralm4, mean_ialm4) 
+hmean_alm4 = almmotho(mean_alm4,lmax)
+mean_map4 = almtomap(hmean_alm4,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map4) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map4)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map4)
+print('Absolute Difference =', abs(orig_map - mean_map4))
+'''
+
+ralm_samples5 = tf.slice(samples5,[0,lmax-2],[len(samples5),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples5 = tf.slice(samples5,[0,(lmax-2 + len_ralm)],[len(samples5),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm5 = [tf.math.reduce_mean(ralm_samples5[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm5 = [tf.math.reduce_mean(ialm_samples5[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm5 = [tf.math.reduce_std(ralm_samples5[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm5 = [tf.math.reduce_std(ialm_samples5[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm5 = splittosingularalm_tf(mean_ralm5, mean_ialm5) 
+hmean_alm5 = almmotho(mean_alm5,lmax)
+mean_map5 = almtomap(hmean_alm5,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map5) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map5)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map5)
+print('Absolute Difference =', abs(orig_map - mean_map5))
+
+ralm_samples6 = tf.slice(samples6,[0,lmax-2],[len(samples6),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples6 = tf.slice(samples6,[0,(lmax-2 + len_ralm)],[len(samples6),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm6 = [tf.math.reduce_mean(ralm_samples6[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm6 = [tf.math.reduce_mean(ialm_samples6[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm6 = [tf.math.reduce_std(ralm_samples6[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm6 = [tf.math.reduce_std(ialm_samples6[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm6 = splittosingularalm_tf(mean_ralm6, mean_ialm6) 
+hmean_alm6 = almmotho(mean_alm6,lmax)
+mean_map6 = almtomap(hmean_alm6,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map6) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map6)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map6)
+print('Absolute Difference =', abs(orig_map - mean_map6))
+
+
+'''
+ralm_samples7 = tf.slice(samples7,[0,lmax-2],[len(samples7),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples7 = tf.slice(samples7,[0,(lmax-2 + len_ralm)],[len(samples7),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm7 = [tf.math.reduce_mean(ralm_samples7[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm7 = [tf.math.reduce_mean(ialm_samples7[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm7 = [tf.math.reduce_std(ralm_samples7[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm7 = [tf.math.reduce_std(ialm_samples7[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm7 = splittosingularalm_tf(mean_ralm7, mean_ialm7) 
+hmean_alm7 = almmotho(mean_alm7,lmax)
+mean_map7 = almtomap(hmean_alm7,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map7) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map7)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map7)
+print('Absolute Difference =', abs(orig_map - mean_map7))
+'''
+
+
+ralm_samples8 = tf.slice(samples8,[0,lmax-2],[len(samples8),len_ralm]) #The real alm samples from the adaptive step size HMC
+ialm_samples8 = tf.slice(samples8,[0,(lmax-2 + len_ralm)],[len(samples8),len_ralm-(2*lmax - 1)]) #The imaginary alm samples from the adaptive step size HMC
+mean_ralm8 = [tf.math.reduce_mean(ralm_samples8[:,i])  for i in range(len_ralm)] #The mean of all the samples from the real alms
+mean_ialm8 = [tf.math.reduce_mean(ialm_samples8[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The mean of all the samples from the imaginary alms
+std_ralm8 = [tf.math.reduce_std(ralm_samples8[:,i])  for i in range(len_ralm)] #The standard deviation of all the samples from the real alms
+std_ialm8 = [tf.math.reduce_std(ialm_samples8[:,i])  for i in range(len_ralm-(2*lmax - 1))] #The standard deviation of all the samples from the imaginary alms
+mean_alm8 = splittosingularalm_tf(mean_ralm8, mean_ialm8) 
+hmean_alm8 = almmotho(mean_alm8,lmax)
+mean_map8 = almtomap(hmean_alm8,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map8) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map8)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map8)
+print('Absolute Difference =', abs(orig_map - mean_map8))
+
+
+#%%
+#find the map of the mean of the chains
+#mean_ralmnp1 = []
+mean_ralmnp2 = []
+#mean_ralmnp3 = []
+#mean_ralmnp4 = []
+mean_ralmnp5 = []
+mean_ralmnp6 = []
+#mean_ralmnp7 = []
+mean_ralmnp8 = []
+#mean_ialmnp1 = []
+mean_ialmnp2 = []
+#mean_ialmnp3 = []
+#mean_ialmnp4 = []
+mean_ialmnp5 = []
+mean_ialmnp6 = []
+#mean_ialmnp7 = []
+mean_ialmnp8 = []
+#std_ralmnp1 = []
+std_ralmnp2 = []
+#std_ralmnp3 = []
+#std_ralmnp4 = []
+std_ralmnp5 = []
+std_ralmnp6 = []
+#std_ralmnp7 = []
+std_ralmnp8 = []
+#std_ialmnp1 = []
+std_ialmnp2 = []
+#std_ialmnp3 = []
+#std_ialmnp4 = []
+std_ialmnp5 = []
+std_ialmnp6 = []
+#std_ialmnp7 = []
+std_ialmnp8 = []
+for i in range(len(mean_ralm2)):
+    #mean_ralmnp1.append(mean_ralm1[i].numpy())
+    mean_ralmnp2.append(mean_ralm2[i].numpy())
+    #mean_ralmnp3.append(mean_ralm3[i].numpy())
+    #mean_ralmnp4.append(mean_ralm4[i].numpy())
+    mean_ralmnp5.append(mean_ralm5[i].numpy())
+    mean_ralmnp6.append(mean_ralm6[i].numpy())
+    #mean_ralmnp7.append(mean_ralm7[i].numpy())
+    mean_ralmnp8.append(mean_ralm8[i].numpy())
+    #std_ralmnp1.append(std_ralmnp1)
+    std_ralmnp2.append(std_ralmnp2)
+    #std_ralmnp3.append(std_ralmnp3)
+    #std_ralmnp4.append(std_ralmnp4)
+    std_ralmnp5.append(std_ralmnp5)
+    std_ralmnp6.append(std_ralmnp6)
+    #std_ralmnp7.append(std_ralmnp7)
+    std_ralmnp8.append(std_ralmnp8)
+for i in range(len(mean_ialm2)):
+    #mean_ialmnp1.append(mean_ialm1[i].numpy())
+    mean_ialmnp2.append(mean_ialm2[i].numpy())
+    #mean_ialmnp3.append(mean_ialm3[i].numpy())
+    #mean_ialmnp4.append(mean_ialm4[i].numpy())
+    mean_ialmnp5.append(mean_ialm5[i].numpy())
+    mean_ialmnp6.append(mean_ialm6[i].numpy())
+    #mean_ialmnp7.append(mean_ialm7[i].numpy())
+    mean_ialmnp8.append(mean_ialm8[i].numpy())
+    #std_ialmnp1.append(std_ialmnp1)
+    std_ialmnp2.append(std_ialmnp2)
+    #std_ialmnp3.append(std_ialmnp3)
+    #std_ialmnp4.append(std_ialmnp4)
+    std_ialmnp5.append(std_ialmnp5)
+    std_ialmnp6.append(std_ialmnp6)
+    #std_ialmnp7.append(std_ialmnp7)
+    std_ialmnp8.append(std_ialmnp8)    
+#mean_ralmnp1 = np.array(mean_ralmnp1)
+mean_ralmnp2 = np.array(mean_ralmnp2)
+#mean_ralmlnp3 = np.array(mean_ralmnp3)
+#mean_ralmnp4 = np.array(mean_ralmnp4)
+mean_ralmnp5 = np.array(mean_ralmnp5)
+mean_ralmnp6 = np.array(mean_ralmnp6)
+#mean_ralmnp7 = np.array(mean_ralmnp7)
+mean_ralmnp8 = np.array(mean_ralmnp8)
+#mean_ialmnp1 = np.array(mean_ialmnp1)
+mean_ialmnp2 = np.array(mean_ialmnp2)
+#mean_ialmlnp3 = np.array(mean_ialmnp3)
+#mean_ialmnp4 = np.array(mean_ialmnp4)
+mean_ialmnp5 = np.array(mean_ialmnp5)
+mean_ialmnp6 = np.array(mean_ialmnp6)
+#mean_ialmnp7 = np.array(mean_ialmnp7)
+mean_ialmnp8 = np.array(mean_ialmnp8)
+#std_ralmnp1 = np.array(std_ralmnp1)
+std_ralmnp2 = np.array(std_ralmnp2)
+#std_ralmnp3 = np.array(std_ralmnp3)
+#std_ralmnp4 = np.array(std_ralmnp4)
+std_ralmnp5 = np.array(std_ralmnp5)
+std_ralmnp6 = np.array(std_ralmnp6)
+#std_ralmnp7 = np.array(std_ralmnp7)
+std_ralmnp8 = np.array(std_ralmnp8)
+#std_ialmnp1 = np.array(std_ialmnp1)
+std_ialmnp2 = np.array(std_ialmnp2)
+#std_ialmnp3 = np.array(std_ialmnp3)
+#std_ialmnp4 = np.array(std_ialmnp4)
+std_ialmnp5 = np.array(std_ialmnp5)
+std_ialmnp6 = np.array(std_ialmnp6)
+#std_ialmnp7 = np.array(std_ialmnp7)
+std_ialmnp8 = np.array(std_ialmnp8)
+mean_ralm = 0.25*(mean_ralm2 + mean_ralm5 + mean_ralm6 + mean_ralm8)     #The mean of all the samples from the real alms
+mean_ialm = 0.25*(mean_ialm2 + mean_ialm5 + mean_ialm6 + mean_ialm8)     #The mean of all the samples from the imaginary alms
+std_ralm =  (std_ralm2**2 + std_ralm5**2 + std_ralm6**2 + std_ralm8**2)**0.5    #The standard deviation of all the samples from the real alms
+std_ialm = (std_ialm2**2 + std_ialm5**2 + std_ialm6**2 + std_ialm8**2)**0.5  #The standard deviation of all the samples from the imaginary alms
+mean_alm = splittosingularalm_tf(mean_ralm, mean_ialm) 
+hmean_alm = almmotho(mean_alm,lmax)
+mean_map = almtomap(hmean_alm,NSIDE) #The mean samples from the HMC as a map
+mollviewmap(orig_map) #Plot of the original map
+mollviewmap(mean_map) #Plot of the mean samples from the HMC as a map
+mollviewmap(abs(orig_map - mean_map)) #A plot of the difference between the original and sampled maps.
+print('Original Map =',orig_map)
+print('Estimated Map =',mean_map)
+print('Absolute Difference =', abs(orig_map - mean_map))
+
+#%%
+#Histograms of the sampling region
+for i in range(1):
+    plt.figure(figsize = [10,8])
+    plt.hist(cl_samples1[:,i].numpy(), 'auto', density = 'True')  #Histogram of the sampled cls for each l value.
+    plt.xlabel('Data:')
+    plt.ylabel('Probability Density:')
+    plt.title('The sampling incidents of the HMC for each cl:')
+    _xmin1, _xmax1 = 0.9**np.min(cl_samples1[:,i].numpy()), 1.1*np.max(cl_samples1[:,i].numpy())
+    plt.xlim(_xmin1, _xmax1)
+    kde_xs1 = np.linspace(_xmin1, _xmax1, 300)
+    kde1 = st.gaussian_kde(cl_samples1[:,i].numpy())
+    plt.plot(kde_xs1, kde1.pdf(kde_xs1), 'k', '--')
+    _meancl1 = np.mean(cl_samples1[:,i].numpy())
+    plt.plot(_meancl1, kde1.pdf(_meancl1),'ro', markersize = 10.5)
+    plt.axvline(orig_cls[i+2], color='k', linestyle='dashed', linewidth=1)
+    plt.grid()
+    plt.legend(('Best Fit Plot', r'Mean $C_l$','Cl Incidences','True $C_l$'))
+    plt.show()
+
+for i in range(1):
+    plt.figure(figsize = [10,8])
+    plt.hist(cl_samples2[:,i].numpy(), 'auto', density = 'True')  #Histogram of the sampled cls for each l value.
+    plt.xlabel('Data:')
+    plt.ylabel('Probability Density:')
+    plt.title('The sampling incidents of the HMC for each cl:')
+    _xmin2, _xmax2 = 0.9**np.min(cl_samples2[:,i].numpy()), 1.1*np.max(cl_samples2[:,i].numpy())
+    plt.xlim(_xmin2, _xmax2)
+    kde_xs2 = np.linspace(_xmin2, _xmax2, 300)
+    kde2 = st.gaussian_kde(cl_samples2[:,i].numpy())
+    plt.plot(kde_xs2, kde2.pdf(kde_xs2), 'k', '--')
+    _meancl2 = np.mean(cl_samples2[:,i].numpy())
+    plt.plot(_meancl2, kde2.pdf(_meancl2),'ro', markersize = 10.5)
+    plt.axvline(orig_cls[i+2], color='k', linestyle='dashed', linewidth=1)
+    plt.grid()
+    plt.legend(('Best Fit Plot', r'Mean $C_l$','Cl Incidences','True $C_l$'))
+    plt.show()
+    
+for i in range(1):
+    plt.figure(figsize = [10,8])
+    plt.hist(cl_samples3[:,i].numpy(), 'auto', density = 'True')  #Histogram of the sampled cls for each l value.
+    plt.xlabel('Data:')
+    plt.ylabel('Probability Density:')
+    plt.title('The sampling incidents of the HMC for each cl:')
+    _xmin3, _xmax3 = 0.9**np.min(cl_samples3[:,i].numpy()), 1.1*np.max(cl_samples3[:,i].numpy())
+    plt.xlim(_xmin3, _xmax3)
+    kde_xs3 = np.linspace(_xmin3, _xmax3, 300)
+    kde3 = st.gaussian_kde(cl_samples3[:,i].numpy())
+    plt.plot(kde_xs3, kde3.pdf(kde_xs3), 'k', '--')
+    _meancl3 = np.mean(cl_samples3[:,i].numpy())
+    plt.plot(_meancl3, kde3.pdf(_meancl3),'ro', markersize = 10.5)
+    plt.axvline(orig_cls[i+2], color='k', linestyle='dashed', linewidth=1)
+    plt.grid()
+    plt.legend(('Best Fit Plot', r'Mean $C_l$','Cl Incidences','True $C_l$'))
+    plt.show()
+    
+#%%
+#LnCl trace plots for the fixed step size hmc
+ex1 = np.arange(len(lncl_samples1))
+for i in range(1):
+    plt.figure()
+    plt.plot(ex1,lncl_samples1[:,i])
+    plt.plot(ex1,lncl_samples1[:,i],'x')
+    plt.xlabel('Sample Instance:')
+    plt.ylabel('lncl Value:')
+    _lnclmean1 = np.mean(lncl_samples1[:,i])
+    plt.plot(np.array([0, len(lncl_samples1)]),np.array([_lnclmean1, _lnclmean1]), 'k--')
+    plt.plot(np.array([0, len(lncl_samples5)]),np.array([np.log(orig_cls[i+2]),np.log(orig_cls[i+2])]))
+    plt.grid()
+    #plt.ylim(ymin = 0)
+    plt.show()
+
+ex2 = np.arange(len(lncl_samples2))
+for i in range(1):
+    plt.figure()
+    plt.plot(ex2,lncl_samples2[:,i])
+    plt.plot(ex2,lncl_samples2[:,i],'x')
+    plt.xlabel('Sample Instance:')
+    plt.ylabel('lncl Value:')
+    _lnclmean2 = np.mean(lncl_samples2[:,i])
+    plt.plot(np.array([0, len(lncl_samples2)]),np.array([_lnclmean2, _lnclmean2]), 'k--')
+    plt.plot(np.array([0, len(lncl_samples5)]),np.array([np.log(orig_cls[i+2]),np.log(orig_cls[i+2])]))
+    plt.grid()
+    #plt.ylim(ymin = 0)
+    plt.show()
+
+ex3 = np.arange(len(lncl_samples3))
+for i in range(1):
+    plt.figure()
+    plt.plot(ex3,lncl_samples3[:,i])
+    plt.plot(ex3,lncl_samples3[:,i],'x')
+    plt.xlabel('Sample Instance:')
+    plt.ylabel('lncl Value:')
+    _lnclmean3 = np.mean(lncl_samples3[:,i])
+    plt.plot(np.array([0, len(lncl_samples3)]),np.array([_lnclmean3, _lnclmean3]), 'k--')
+    plt.plot(np.array([0, len(lncl_samples5)]),np.array([np.log(orig_cls[i+2]),np.log(orig_cls[i+2])]))
+    plt.grid()
+    #plt.ylim(ymin = 0)
+    plt.show()
+    
+ex4 = np.arange(len(lncl_samples4))
+for i in range(1):
+    plt.figure()
+    plt.plot(ex4,lncl_samples4[:,i])
+    plt.plot(ex4,lncl_samples4[:,i],'x')
+    plt.xlabel('Sample Instance:')
+    plt.ylabel('lncl Value:')
+    _lnclmean4 = np.mean(lncl_samples4[:,i])
+    plt.plot(np.array([0, len(lncl_samples4)]),np.array([_lnclmean4, _lnclmean4]), 'k--')
+    plt.plot(np.array([0, len(lncl_samples5)]),np.array([np.log(orig_cls[i+2]),np.log(orig_cls[i+2])]))
+    plt.grid()
+    #plt.ylim(ymin = 0)
+    plt.show()
+    
+ex5 = np.arange(len(lncl_samples5))
+for i in range(1):
+    plt.figure()
+    plt.plot(ex5,lncl_samples5[:,i])
+    plt.plot(ex5,lncl_samples5[:,i],'x')
+    plt.xlabel('Sample Instance:')
+    plt.ylabel('lncl Value:')
+    _lnclmean5 = np.mean(lncl_samples5[:,i])
+    plt.plot(np.array([0, len(lncl_samples5)]),np.array([_lnclmean5, _lnclmean5]), 'k--')
+    plt.plot(np.array([0, len(lncl_samples5)]),np.array([np.log(orig_cls[i+2]),np.log(orig_cls[i+2])]))
+    plt.grid()
+    #plt.ylim(ymin = 0)
+    plt.show()
+    
+#%%
+#Trace plots for the cls    
+ex = np.arange(len(cl_samples1))
+for i in range(len_cl - 2):
+    plt.figure()
+    plt.plot(ex,cl_samples1[:,i])
+    plt.plot(ex,cl_samples1[:,i],'x')
+    plt.xlabel('Sample Instance:')
+    plt.ylabel('cl Value:')
+    _clmean1 = np.mean(cl_samples1[:,i])
+    plt.plot(np.array([0, len(cl_samples1)]),np.array([_clmean1, _clmean1]), 'k--')
+
+    plt.grid()
+    #plt.ylim(ymin = 0)
+    plt.show()
+
+#%%
+#Time as a function of lmax for the hmc sampler with 25 steps w/ 5 leapfrog steps and 0.01 step size. Map has noise std 5
+hmc_times_secs_25 = np.array([4.00884485244751,6.524938106536865,9.349684715270996,12.23678731918335,16.66150188446045])
+#acceptance rates = np.array([1.0,1.0,0.88,0.72,0.80])
+hmc_times_secs_25_lmaxs = np.array([6.0,12.0,18.0,24.0,30.0])
+#however some of these have different effective sample sizes 
+hmc_times_secs_25_e_s_s = np.array([6.285078621276355,7.586531524350682,8.835822033473436,11.877273410597086,16.03736986250279]) #note the lmax = 18 is nan
+#Effective sample size of the mcmc chain(is a lower bound)
+plt.figure()
+plt.plot(hmc_times_secs_25_lmaxs, hmc_times_secs_25/hmc_times_secs_25_e_s_s, 'ro', hmc_times_secs_25_lmaxs, hmc_times_secs_25/hmc_times_secs_25_e_s_s, 'k-')
+plt.xlabel('lmax:')
+plt.ylabel('Time taken/s:')
+plt.grid()
+plt.title('Time taken for one effective sample with hmc as a function of lmax:')
+plt.show()
+
+
+#%%
+
+
+
+
+
