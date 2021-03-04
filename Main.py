@@ -25,7 +25,7 @@ import sys
 
 #%%
 #Use CAMB to generate a power spectrum
-def call_CAMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
+def call_CMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
     '''
     parameters = [H0, ombh2, omch2, mnu, omk, tau]  = [Hubble Const, Baryon density, DM density, 
     Sum 3 neutrino masses/eV, Curvature parameter (Omega kappa), Reionisation optical depth]
@@ -401,7 +401,7 @@ class Cosmology_Advanced_Sampling:
         Ninv = []
         for i in range(NPIX):
             Ninv.append(1/(n[i]**2)) #finds the inverse noise matrix
-        lcdm_cls = call_CAMB_map(lcdm_parameters, _lmax) #power spectrum for the given parameters and lmax.
+        lcdm_cls = call_CMB_map(lcdm_parameters, _lmax) #power spectrum for the given parameters and lmax.
         notpad_lcdm_alms = hpcltoalm(lcdm_cls, _NSIDE, _lmax)
         pad_lcdm_alms = hpalminit(notpad_lcdm_alms, _lmax)
         pad_lcdm_map = hpalmtomap(pad_lcdm_alms, _NSIDE, _lmax)  #generates a map from the power spectrum
