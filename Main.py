@@ -22,12 +22,23 @@ import sys
 
 
 #%%
-#Use CAMB to generate a power spectrum
 def call_CAMB_map(_parameters, _lmax):
-    '''
-    parameters = [H0, ombh2, omch2, mnu, omk, tau]  = [Hubble Const, Baryon density, DM density, 
-    Sum 3 neutrino masses/eV, Curvature parameter (Omega kappa), Reionisation optical depth]
-    '''
+    """
+    Use CAMB to generate a power spectrum.
+
+     Parameters:
+    _parameters (list): List of cosmological parameters [H0, ombh2, omch2, mnu, omk, tau].
+                        H0: Hubble Constant
+                        ombh2: Baryon density
+                        omch2: Dark Matter density
+                        mnu: Sum of 3 neutrino masses in eV
+                        omk: Curvature parameter (Omega kappa)
+                        tau: Reionisation optical depth
+    _lmax (int): Maximum multipole moment. 
+    
+    Returns:
+    numpy.ndarray: Power spectrum (C_l) up to the given _lmax.
+    """
     if _lmax <= 2551: #can only find power spectrum for lmax <= 2551 since that is the maximum value of the data.
         pars = camb.CAMBparams()
         pars.set_cosmology(H0 = _parameters[0], ombh2 = _parameters[1], omch2 = _parameters[2], mnu = _parameters[3],
@@ -129,8 +140,7 @@ def maptoalm(_map):
         for m in range(l+1):
             _TpYlm = []
             for i in range(len(_map)):
-                _TpYlm.append(_map[i]*np.conjugate(sphharm(m, l, i, _NSIDE)))
-                    
+                _TpYlm.append(_map[i]*np.conjugate(sphharm(m, l, i, _NSIDE)))                    
             _alm.append(_omegp*sum(_TpYlm))
     
     return np.array(_alm)
