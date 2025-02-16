@@ -1,13 +1,11 @@
 #Import Packages
 import tensorflow as tf
 import tensorflow_probability as tfp
-#from tensorflow_probability import experimental
 tfd = tfp.distributions
 import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
 import healpy as hp
-#import pandas as pd
 import camb 
 from camb import model, initialpower
 import glob
@@ -25,7 +23,7 @@ import sys
 
 #%%
 #Use CAMB to generate a power spectrum
-def call_CMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
+def call_CAMB_map(_parameters, _lmax):
     '''
     parameters = [H0, ombh2, omch2, mnu, omk, tau]  = [Hubble Const, Baryon density, DM density, 
     Sum 3 neutrino masses/eV, Curvature parameter (Omega kappa), Reionisation optical depth]
@@ -39,13 +37,12 @@ def call_CMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
         pars.set_for_lmax(_lmax, lens_potential_accuracy=0) #input the given lmax value
         
         results = camb.get_results(pars)
-        powers =results.get_cmb_power_spectra(pars, CMB_unit='muK') #returns the power spectrum in units muK.
+        powers = results.get_cmb_power_spectra(pars, CMB_unit='muK') #returns the power spectrum in units muK.
         
         totCL=powers['total'] #returns the total (averaged) power spectrum - including lensed, unlensed power spectra 
         _DL = totCL[:,0] 
         
         #unlensedCL=powers['unlensed_scalar'] #returns the unlensed scalar power spectrum
-        #_DL = unlensedCL[:,0] # 
     
         _l = np.arange(len(_DL)) #not sure this CL is actually CL but is actually DL
         _CL = []
@@ -60,11 +57,9 @@ def call_CMB_map(_parameters, _lmax): #lmax above 2551 makes no difference?
     
         return _CL 
     
-    else: #prints error if lmax is too large.
+    else:
         print('lmax value is larger than the available data.')
         
-        
-#%%
 #Plots a given power spectrum 
 def plotpwrspctrm(_cls):
     _l = np.arange(len(_cls))
@@ -74,24 +69,22 @@ def plotpwrspctrm(_cls):
     plt.grid()
     plt.title("Power Spectrum")
     
-#%%
 #Plots a map in the mollview projection 
 def mollviewmap(_map):
     hp.mollview(_map, title="Map displayed in the Molleview projection", cmap = None)
     hp.graticule()
     
-#%%
 #Adds random noise to each pixel on a map given a variance 
 def noisemapfunc(_map,_var):
-    _noisevec = np.random.normal(0,_var,len(_map)) #A vector of the noise applied to each pixel
+    _noisevec = np.random.normal(0,_var, len(_map)) #A vector of the noise applied to each pixel
     _newmap = [x + y for x, y in zip(_map, _noisevec)]
     _newmap, _noisevec = np.array(_newmap), np.array(_noisevec)
     return [_newmap, _noisevec] #returns an array consisiting of [map with added noise, array of the added noise]
 
-#%%
 #cls --> something
 def cltoalm(_cls, _NSIDE, _lmax): #doesn't work (isnt currently being used)
     _alms = []
+    _count = 0
     for l in range(_lmax): 
         if _cls[l] > 0:
             _alms.append(np.complex(np.random.normal(0,_cls[l]),0))        #set m=0, which is real
@@ -107,29 +100,27 @@ def cltoalm(_cls, _NSIDE, _lmax): #doesn't work (isnt currently being used)
                 _alms.append(np.complex(0,np.random.normal(0,0.5*_cls[m])))
             else:
                 _alms.append(np.complex(0,0))
-    
     return _alms   
 
-def hpcltoalm(_cls, _NSIDE, _lmax): #Healpy generate alms given cls
+#Healpy generate alms given cls
+def hpcltoalm(_cls, _NSIDE, _lmax): 
     return hp.synalm(_cls, _lmax - 1, new = True)
 
-def cltomap(_cls, _NSIDE, _lmax): #doesn't work (isnt currently being used)
+#doesn't work (isnt currently being used)
+def cltomap(_cls, _NSIDE, _lmax): 
     _alm = cltoalm(_cls, _NSIDE, _lmax)
     return almtomap(_alm, _NSIDE, _lmax)
 
-def hpcltomap(_cls, _NSIDE, _lmax):   #Healpy generate a map given a power spectrum
+#Healpy generate a map given a power spectrum
+def hpcltomap(_cls, _NSIDE, _lmax):   
     return hp.synfast(_cls, _NSIDE, _lmax - 1, new=True) 
 
-
-#%%
-#map --> something
-def maptocl(_map): #does this manually - doesn't work (isnt currently being used)
-    return
-
-def hpmaptocl(_map, _NSIDE, _lmax): #Generate a power spectrum given cls
+#Generate a power spectrum given cls
+def hpmaptocl(_map, _NSIDE, _lmax): 
     return hp.anafast(_map, lmax = _lmax - 1)    #lmax = 3NSIDE by default
 
-def maptoalm(_map): #does this manually - doesn't work (isnt currently being used)
+#does this manually - doesn't work (isnt currently being used)
+def maptoalm(_map): 
     _omegp = (4*np.pi)/len(_map)
     _lmax = int(np.sqrt(len(_map)*(3/4)))
     _NSIDE = int(_lmax/3)
@@ -144,12 +135,10 @@ def maptoalm(_map): #does this manually - doesn't work (isnt currently being use
     
     return np.array(_alm)
 
-
-def hpmaptoalm(_map, _lmax): #Healpy generate alms from map. 
+#Healpy generate alms from map. 
+def hpmaptoalm(_map, _lmax): 
     return hp.map2alm(_map, _lmax-1)
 
-
-#%%
 ##alm --> something
 def almtocl(_alm, lmax): #alm --> cl using alms in my ordering (different to healpys).
     _l = np.arange(lmax)
@@ -173,10 +162,12 @@ def almtocl(_alm, lmax): #alm --> cl using alms in my ordering (different to hea
     
     return _cl
 
-def hpalmtocl(_alms, _lmax): #Healpy estimates the power spectrum from the cls.
+#Healpy estimates the power spectrum from the cls.
+def hpalmtocl(_alms, _lmax): 
     return hp.alm2cl(_alms, lmax = _lmax-1)
 
-def almtomap(_alm, _NSIDE, _lmax):# alm --> map using alms in my ordering (different to healpys).    #used in psi
+# alm --> map using alms in my ordering (different to healpys).    #used in psi
+def almtomap(_alm, _NSIDE, _lmax):
     _map = []
     _Npix = 12*(_NSIDE)**2
 
@@ -217,27 +208,47 @@ def almtomap_tf(_alm,_NSIDE, _lmax, _sph):  #used in psitf
     _map = 2*(_map1 - _map2)
     return _map
 
+def almtomap_tf2(_alm,_NSIDE, _lmax):
+    _map = tf.Variable([])
+    _ralm = tf.math.real(_alm) 
+    _ialm = tf.math.imag(_alm) 
+    _rsph = tf.math.real(_sph) 
+    _isph = tf.math.imag(_sph) 
+    _map = tf.Variable(np.array([]))
+    for i in range(12*(_NSIDE)**2):
+        _count = 0
+        _term1 = tf.Variable(0.0,dtype = np.float64)
+        for l in range(_lmax):
+            for m in range(l+1):
+                if m==0:
+                    tf.compat.v1.assign_add(_term1, _ralm[_count]*_rsph[i][_count])
+                    _count = _count + 1
+                else:
+                    tf.compat.v1.assign_add(_term1,2*(_ralm[_count]*_rsph[i][_count] - 
+                                                                  _ialm[_count]*_isph[i][_count]),0.0)
+                    _count = _count + 1
 
+        _map = tf.concat((_map, [_term1]), axis = 0)
+    _map = tf.dtypes.cast(_map, np.float64)
+    return _map
+
+#healpy map build
 def hpalmtomap(_alms, _NSIDE, _lmax):
     return hp.alm2map(_alms, _NSIDE ,_lmax-1)
 
-
-#%%
 #healpy smoothing for the map and the alms
 def hpmapsmooth(_map, _lmax): #smooths a given map with a gaussian beam smoother.
-    return _map #hp.smoothing(_map, lmax = _lmax)
+    return hp.smoothing(_map, lmax = _lmax)
 
+#healpy gaussian smoothing for the alms
 def hpalmsmooth(_alms): #smooths a given set of alms with a gaussian beam smoother.
     return hp.smoothalm(_alms, fwhm = 0.0)
 
-
-#%%
 #splits/rejoins the alms into real/imaginary parts so that they can be optimised with scipy.optimize.minimize()
 def singulartosplitalm(_alm):
     _realalm, _imagalm = _alm.real, _alm.imag
     return [_realalm, _imagalm]
     
-
 def splittosingularalm(_realalm, _imagalm, lmax):
     _alm = []
     _ralmcount = 0
@@ -276,16 +287,11 @@ def splittosingularalm_tf(_realalm, _imagalm, lmax): #takes the real and imagina
             _count = _count + 1
     return tf.complex(_realalm,_imagalm)
 
-
-
-
-#%%
 #Retrieves the spherical harmonics for a given, l, m and pixel number
 def sphharm(m, l, _pixno, _NSIDE):
     _theta, _phi = hp.pix2ang(nside=_NSIDE, ipix=_pixno)
     return sp.special.sph_harm(m, l, _phi, _theta)
 
-#%%
 #Changes the ordering of the alms from healpy to mine or vice versa
 def almmotho(_moalm, _lmax):
     '''changing the alm ordering from my ordering to healpys'''
@@ -320,9 +326,8 @@ def almhotmo(_hoalm, _lmax):
             _count2 = _count2 + j        
     return np.array(_moalm)
 
-
+#pads zeros to the real l=0 and l=1 terms of the alms - in my ordering 
 def alminit(_alms, _lmax):
-    #pads zeros to the real l=0 and l=1 terms of the alms - in my ordering 
     _count = 0
     for l in range(_lmax):
         for m in range(l + 1):
@@ -339,9 +344,8 @@ def alminit(_alms, _lmax):
                 _count = _count + 1
     return _alms
 
-
-def hpalminit(_alms, _lmax):
-    #pads zeros to the real l=0 and l=1 terms of the alms - in healpys ordering 
+#pads zeros to the real l=0 and l=1 terms of the alms - in healpys ordering 
+def hpalminit(_alms, _lmax):    
     _count = 0
     for l in range(_lmax):
         for m in range(l + 1):
@@ -354,10 +358,9 @@ def hpalminit(_alms, _lmax):
         _count = _count + 1
     return _alms
 
-
-#%%
+#matrix for the calculation of the psi in psi_tf
 def multtensor(_lmax,_lenalm):
-    _shape = np.zeros([_lmax,_lenalm]) #matrix for the calculation of the psi in psi_tf
+    _shape = np.zeros([_lmax,_lenalm]) 
     _count = 0
     for i in range(_lmax):
         for j in np.arange(0,i+1):
